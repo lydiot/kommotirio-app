@@ -324,3 +324,45 @@ label.btn input[type=file] { display: none; }
 
 .err-box { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); border: 1.5px solid var(--danger); border-radius: 12px; padding: 12px 14px; margin-top: 10px; }
 .err-detail { font-size: 13px; color: var(--muted); margin-top: 6px; word-break: break-word; font-family: ui-monospace, Menlo, monospace; }
+
+/* ---------- Πλήρες ριπόρτ ---------- */
+.rhead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin: 16px 4px 8px; }
+.rhead .rtitle { margin: 0; }
+.rsub { color: var(--muted); font-size: 14px; }
+.print-btn { width: auto; min-height: 40px; font-size: 15px; margin-left: auto; padding: 0 14px; }
+@media (max-width: 700px) { .print-btn { display: none; } }
+.rnav { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 4px 0 10px; position: sticky; top: calc(var(--safe-top) + 60px); z-index: 5; background: var(--bg); }
+.rnav button { flex: none; border: 1.5px solid var(--line); background: var(--surface); border-radius: 999px; padding: 8px 14px; font-size: 15px; font-weight: 600; min-height: 42px; }
+.rnav button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.rbody > .rcard, .rbody > .rgrid, .rbody > .kpis, .rsec > .rcard, .rsec > .rgrid, .rsec > .kpis { margin-top: 14px; }
+.rsec-title { font-size: 20px; text-transform: none; letter-spacing: 0; color: var(--text); border-top: 2px solid var(--line); padding-top: 18px; margin-top: 28px; }
+.kpis { grid-template-columns: repeat(2, 1fr); }
+@media (min-width: 760px) { .kpis { grid-template-columns: repeat(4, 1fr); } }
+.stat.neg .v { color: var(--danger); }
+.delta { font-size: 13px; margin-top: 4px; font-weight: 650; }
+.delta span { font-weight: 400; color: var(--muted); }
+.delta.up { color: var(--ok); } .delta.down { color: var(--danger); }
+.insights ul { margin: 0; padding-left: 20px; } .insights li { margin: 6px 0; line-height: 1.45; }
+.seg { display: inline-flex; border: 1.5px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 12px; }
+.seg button { border: 0; background: var(--surface); padding: 8px 14px; font-size: 15px; font-weight: 600; min-height: 42px; }
+.seg button.on { background: var(--accent); color: var(--accent-ink); }
+.hb-fill.seq { background: var(--series-1); }
+.hb-fill.s2f { background: var(--series-2); }
+.hb-val small { color: var(--muted); font-weight: 400; margin-left: 4px; }
+.hb-label b { color: var(--muted); font-weight: 600; margin-right: 2px; }
+.rtable td.txt, .rtable th.txt { text-align: left; white-space: normal; min-width: 90px; }
+.rtable tr[data-client], .rtable tr[data-drill] { cursor: pointer; }
+.rtable tr[data-client]:hover, .rtable tr[data-drill]:hover { background: var(--accent-soft); }
+.rtable .ok { color: var(--ok); }
+.heat { border-collapse: separate; border-spacing: 2px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.heat th { color: var(--muted); font-weight: 600; padding: 2px 4px; }
+.heat td { width: 36px; height: 30px; text-align: center; border-radius: 4px; }
+
+@media print {
+  .no-print, .topbar, .tabbar, .banner, #go-today, .toast, .rnav { display: none !important; }
+  body { background: #fff; color: #000; }
+  main { max-width: none !important; padding: 0 !important; }
+  .rcard, .stat, .kpis { break-inside: avoid; }
+  .rsec { break-before: page; } .rsec:first-child { break-before: auto; }
+  .tscroll { overflow: visible; }
+}

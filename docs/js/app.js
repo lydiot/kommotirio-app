@@ -3,7 +3,7 @@ import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
 import { renderResults } from './results.js';
 
-const APP_VERSION = '2.5.1';
+const APP_VERSION = '2.6.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
