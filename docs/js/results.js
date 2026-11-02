@@ -500,7 +500,7 @@ function secClients(ctx) {
   const q = norm(R.clientQuery.trim());
   const sorters = { spend: (x, y) => y.spend - x.spend, visits: (x, y) => y.visits - x.visits || y.spend - x.spend, last: (x, y) => (x.last < y.last ? 1 : -1), name: (x, y) => x.name.localeCompare(y.name, 'el') };
   const list = cs.active.filter((c) => !q || norm(c.name).includes(q)).sort(sorters[R.clientSort]);
-  const shown = list.slice(0, R.clientLimit);
+  const shown = R.printing ? list : list.slice(0, R.clientLimit);
   const every = (e) => (e == null ? '—' : e < 14 ? `${Math.round(e)} ημ.` : `${num.format(e / 7)} εβδ.`);
   return `
   <div class="kpis">
@@ -518,7 +518,7 @@ function secClients(ctx) {
     <p class="note">Πελάτισσες με ≥2 επισκέψεις που δεν ήρθαν για πάνω από 1,5× το συνηθισμένο τους διάστημα (και ≥4 εβδομάδες). ${cs.oneTimersGone ? `Επιπλέον ${cs.oneTimersGone} ήρθαν μία φορά και δεν ξαναφάνηκαν για 3+ μήνες.` : ''}</p></section>
   </div>
   <section class="rcard wide"><h3>Όλες οι πελάτισσες της περιόδου (${list.length})</h3>
-    <div class="filters" style="margin-bottom:10px">
+    <div class="filters no-print" style="margin-bottom:10px">
       <label style="flex:2"><span>Αναζήτηση</span><input class="input" data-r="clientQuery" value="${esc(R.clientQuery)}" placeholder="Όνομα…" autocomplete="off"></label>
       <label><span>Ταξινόμηση</span><select class="input" data-r="clientSort">
         ${[['spend', 'Περισσότερα χρήματα'], ['visits', 'Περισσότερες επισκέψεις'], ['last', 'Πιο πρόσφατες'], ['name', 'Αλφαβητικά']].map(([k, l]) => `<option value="${k}" ${R.clientSort === k ? 'selected' : ''}>${l}</option>`).join('')}
@@ -527,7 +527,7 @@ function secClients(ctx) {
     <div class="tscroll"><table class="rtable clickable"><thead><tr><th>Πελάτισσα</th><th>Επισκ.</th><th>Σύνολο</th><th>Μέσος</th><th>Συνήθως κάθε</th><th>Τελευταία</th><th class="txt">Τι κάνει</th><th class="txt">Με ποιον</th></tr></thead>
     <tbody>${shown.map((c) => `<tr data-client="${esc(c.name)}"><th>${esc(c.name)}</th><td>${c.visits}</td><td>${fmt(c.spend)}</td><td>${fmt(c.avg)}</td><td>${every(c.every)}</td><td>${fDate(c.last)}</td><td class="txt">${esc(c.fav || '')}</td><td class="txt">${esc(c.favStaff || '')}</td></tr>`).join('')}</tbody></table></div>
     ${list.length > shown.length ? `<button class="btn" data-act="more-clients" style="margin-top:10px">Δείξε κι άλλες (${list.length - shown.length})</button>` : ''}
-    <p class="note">Πάτα μια πελάτισσα για την πλήρη καρτέλα της.</p>
+    <p class="note no-print">Πάτα μια πελάτισσα για την πλήρη καρτέλα της.</p>
   </section>`;
 }
 
@@ -734,7 +734,17 @@ export async function renderResults(el) {
     <div class="rhead">
       <h2 class="rtitle">${esc(per.label)}${R.staff ? ` · ${esc(R.staff)}` : ''}</h2>
       <span class="rsub">${fDate(per.from)} – ${fDate(per.to)}${cmp ? ` · σύγκριση με ${esc(cmp.label)}` : ''}</span>
-      <button class="btn no-print print-btn" data-act="print">🖨 Εκτύπωση / PDF</button>
+      <button class="btn no-print print-btn" data-act="print-menu">🖨 Εκτύπωση / ⬇ PDF</button>
+      <span class="print-only print-date">Κομμωτήριο · εκτύπωση ${new Date().toLocaleDateString('el-GR', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+    </div>
+    <div class="print-menu no-print" hidden>
+      <b>Τι να τυπωθεί;</b>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn" data-act="print" data-v="section">Μόνο «${esc(R.clientOpen ? R.clientOpen : SECTIONS.find(([k]) => k === R.section)[1])}»</button>
+        <button class="btn primary" data-act="print" data-v="all">Πλήρες ριπόρτ</button>
+      </div>
+      <p class="note">Θα ανοίξει το παράθυρο εκτύπωσης. Για <b>αρχείο PDF</b> διάλεξε ως εκτυπωτή «Αποθήκευση ως PDF»
+        (στο iPhone: Κοινοποίηση ⎋ → «Αποθήκευση στα Αρχεία»). Αλλιώς διάλεξε τον εκτυπωτή σου.</p>
     </div>
     <nav class="rnav no-print">${SECTIONS.map(([k, l]) => `<button class="${R.section === k ? 'on' : ''}" data-sec="${k}">${l}</button>`).join('')}</nav>
     <div class="rbody">${body}</div>
@@ -762,7 +772,7 @@ function bind(el, ctx) {
   });
   el.querySelector('.rnav').addEventListener('click', (e) => {
     const b = e.target.closest('[data-sec]'); if (!b) return;
-    R.section = b.dataset.sec; R.clientOpen = null; rerender();
+    R.section = b.dataset.sec; R.clientOpen = null; R.printing = false; rerender();
   });
   el.querySelector('.rbody').addEventListener('click', (e) => {
     const t = e.target.closest('[data-act],[data-client],[data-drill]');
@@ -774,14 +784,27 @@ function bind(el, ctx) {
     if (act === 'more-clients') { R.clientLimit += 60; rerender(); }
     if (act === 'cat-sort') { R.catSort = t.dataset.v; rerender(); }
   });
-  el.querySelector('[data-act=print]').addEventListener('click', () => {
-    const prev = R.section; R.section = 'all'; R.clientOpen = null;
-    rerender().then(() => {
-      const restore = () => { window.removeEventListener('afterprint', restore); R.section = prev; rerender(); };
-      window.addEventListener('afterprint', restore);
-      setTimeout(() => window.print(), 100);
-    });
+  el.querySelector('[data-act=print-menu]').addEventListener('click', () => {
+    const m = el.querySelector('.print-menu'); m.hidden = !m.hidden;
   });
+  el.querySelectorAll('[data-act=print]').forEach((btn) => btn.addEventListener('click', () => {
+    const prev = { section: R.section, clientOpen: R.clientOpen }, title = 'Κομμωτήριο';
+    if (btn.dataset.v === 'all') { R.section = 'all'; R.clientOpen = null; }
+    R.printing = true;
+    // Το όνομα του αρχείου PDF βγαίνει από τον τίτλο της σελίδας.
+    const sec = R.clientOpen || SECTIONS.find(([k]) => k === R.section)[1];
+    document.title = `Κομμωτήριο - ${ctx.per.label}${R.staff ? ' - ' + R.staff : ''} - ${sec}`;
+    rerender().then(() => {
+      let done = false;
+      const restore = () => {
+        if (done) return; done = true;
+        window.removeEventListener('afterprint', restore);
+        document.title = title; R.printing = false; Object.assign(R, prev); rerender();
+      };
+      window.addEventListener('afterprint', restore);
+      setTimeout(() => window.print(), 150);
+    });
+  }));
 
   // Tooltips: hover σε υπολογιστή, άγγιγμα σε κινητό (2ο άγγιγμα σε μήνα = άνοιγμα μήνα).
   el.querySelectorAll('.chart-wrap').forEach((wrap) => {

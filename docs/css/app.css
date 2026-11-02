@@ -330,7 +330,7 @@ label.btn input[type=file] { display: none; }
 .rhead .rtitle { margin: 0; }
 .rsub { color: var(--muted); font-size: 14px; }
 .print-btn { width: auto; min-height: 40px; font-size: 15px; margin-left: auto; padding: 0 14px; }
-@media (max-width: 700px) { .print-btn { display: none; } }
+@media (max-width: 700px) { .print-btn { margin-left: 0; width: 100%; margin-top: 6px; } }
 .rnav { display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 4px 0 10px; position: sticky; top: calc(var(--safe-top) + 60px); z-index: 5; background: var(--bg); }
 .rnav button { flex: none; border: 1.5px solid var(--line); background: var(--surface); border-radius: 999px; padding: 8px 14px; font-size: 15px; font-weight: 600; min-height: 42px; }
 .rnav button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -385,3 +385,27 @@ label.btn input[type=file] { display: none; }
 a.tel { font-size: 15px; font-weight: 600; color: var(--accent); text-decoration: none; white-space: nowrap; }
 .ci-actions { grid-template-columns: 1fr 1fr; }
 .ci-actions > :first-child { grid-column: 1 / -1; white-space: nowrap; }
+
+/* ---------- Εκτύπωση / PDF ---------- */
+.print-only { display: none; }
+.print-menu { background: var(--surface); border: 1.5px solid var(--accent); border-radius: var(--radius); padding: 14px; margin: 4px 0 12px; }
+.print-menu .btn { min-height: 48px; font-size: 16px; }
+@media print {
+  :root { --bg: #fff; --surface: #fff; --surface-2: #f2f2f2; --text: #111; --muted: #555; --line: #ccc;
+    --accent: #7a3b5e; --accent-ink: #fff; --accent-soft: #f1e3ea; --danger: #b3261e; --ok: #1e7a46;
+    --warn-bg: #fff4d6; --warn-ink: #6b4e00; --series-1: #2a78d6; --series-2: #eb6834; color-scheme: light; }
+  .print-only { display: block; }
+  .print-date { width: 100%; font-size: 12px; color: #555; }
+  .print-menu, .print-btn, .rnav, [data-act=more-clients], [data-act=client-back] { display: none !important; }
+  .rcard { border-color: #ccc; }
+  .rtable th, .rtable td { padding: 5px 6px; font-size: 12px; }
+  .stat .v { font-size: 22px; }
+  .kpis { grid-template-columns: repeat(4, 1fr) !important; }
+  .rgrid { grid-template-columns: 1fr 1fr !important; }
+  .rgrid .wide { grid-column: 1 / -1; }
+  a.tel { color: #111; }
+  .rcard:has(table) { break-inside: auto; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+  @page { margin: 12mm; }
+}
