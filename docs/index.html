@@ -18,6 +18,7 @@
 </head>
 <body>
   <header class="topbar">
+    <span class="results-title">Αποτελέσματα</span>
     <button class="icon-btn" id="day-prev" aria-label="Προηγούμενη ημέρα">‹</button>
     <label class="day-label" id="day-label-wrap">
       <span id="day-label">…</span>
@@ -36,12 +37,14 @@
     <section id="tab-visits" class="tab" data-tab="visits"></section>
     <section id="tab-expenses" class="tab" data-tab="expenses" hidden></section>
     <section id="tab-till" class="tab" data-tab="till" hidden></section>
+    <section id="tab-results" class="tab" data-tab="results" hidden></section>
   </main>
 
   <nav class="tabbar" id="tabbar">
     <button data-tab="visits" class="active"><span class="ti">✂︎</span>Πελάτες</button>
     <button data-tab="expenses"><span class="ti">−</span>Έξοδα</button>
     <button data-tab="till"><span class="ti">€</span>Ταμείο</button>
+    <button data-tab="results"><span class="ti">▥</span>Αποτελέσματα</button>
   </nav>
 
   <div id="sheet" class="sheet" hidden>

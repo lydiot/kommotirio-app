@@ -1,8 +1,9 @@
 import * as db from './db.js';
 import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
+import { renderResults } from './results.js';
 
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.5.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -218,6 +219,8 @@ function renderHeader() {
 function renderTabs() {
   document.querySelectorAll('#tabbar button').forEach((b) => b.classList.toggle('active', b.dataset.tab === S.tab));
   document.querySelectorAll('main .tab').forEach((s) => (s.hidden = s.dataset.tab !== S.tab));
+  document.body.classList.toggle('results-mode', S.tab === 'results');
+  if (S.tab === 'results') renderResults($('#tab-results')).catch((err) => toast(`Σφάλμα αποτελεσμάτων: ${err.message || err}`));
 }
 
 function itemsLine(items) {
