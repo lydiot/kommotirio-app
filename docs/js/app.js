@@ -3,7 +3,7 @@ import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
 import { renderResults, overdueClients } from './results.js';
 
-const APP_VERSION = '2.7.0';
+const APP_VERSION = '2.8.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -1035,6 +1035,88 @@ async function openClientEdit(name, backQuery) {
   });
 }
 
+// ---------------------------------------------------------------- διαχείριση: πάγια έξοδα
+// Ενοίκιο, λογιστής, ΕΦΚΑ κ.λπ. Μπαίνουν ΜΙΑ φορά εδώ (όχι στα καθημερινά έξοδα) και
+// μοιράζονται αυτόματα στις ημέρες κάθε μήνα στα Αποτελέσματα.
+// Αποθήκευση: meta 'fixedCosts' = { items:[{id,name,amount,freq,from,to}], updatedAt }
+const FREQ = { month: ['Κάθε μήνα', 1], quarter: ['Κάθε τρίμηνο', 3], year: ['Μία φορά τον χρόνο', 12] };
+async function getFixed() { return (await db.getMeta('fixedCosts')) || { items: [], updatedAt: 0 }; }
+async function saveFixed(items) { await db.setMeta('fixedCosts', { items, updatedAt: Date.now() }); }
+const monthLabel = (ym) => { if (!ym) return ''; const [y, m] = ym.split('-').map(Number); return new Date(y, m - 1, 1).toLocaleDateString('el-GR', { month: 'short', year: 'numeric' }); };
+
+async function openFixed() {
+  const { items } = await getFixed();
+  const active = (f) => !f.to || f.to >= todayStr().slice(0, 7);
+  const perMonth = sum(items.filter(active).map((f) => Math.round(f.amount / FREQ[f.freq][1])));
+  openSheet({
+    title: 'Πάγια έξοδα',
+    body: `
+      <p class="note" style="margin-top:0">Ενοίκιο, λογιστής, ΕΦΚΑ, ρεύμα (αν είναι σταθερό)… Γράψ’ τα <b>μία φορά εδώ</b> — όχι στα
+        καθημερινά έξοδα — και αφαιρούνται αυτόματα από το κέρδος κάθε μήνα στα Αποτελέσματα.</p>
+      <div class="card" style="margin-bottom:12px"><div class="kv total"><span>Σύνολο ανά μήνα (τώρα)</span><span>${fmt(perMonth)}</span></div></div>
+      <div class="list">${items.map((f) => `
+        <button class="row" data-act="edit-fixed" data-id="${f.id}">
+          <span class="main"><div class="title">${esc(f.name)}</div>
+            <div class="sub">${FREQ[f.freq][0]} · από ${monthLabel(f.from)}${f.to ? ` έως ${monthLabel(f.to)}` : ''}${active(f) ? '' : ' · έληξε'}</div></span>
+          <span class="amt">${fmt(f.amount)}</span></button>`).join('') || '<div class="empty">Κανένα πάγιο ακόμα.</div>'}
+      </div>
+      <button class="btn primary" data-act="new-fixed" style="margin-top:14px">＋ Νέο πάγιο</button>
+      <p class="note">Αν αλλάξει ένα ποσό (π.χ. αύξηση ενοικίου), βάλε «έως» στο παλιό και φτιάξε νέο από τον επόμενο μήνα — έτσι τα παλιά αποτελέσματα μένουν σωστά.</p>`,
+    onAction(act, el) {
+      if (act === 'new-fixed') openFixedEdit(null);
+      if (act === 'edit-fixed') openFixedEdit(items.find((f) => f.id === el.dataset.id));
+    },
+  });
+}
+
+async function openFixedEdit(item) {
+  const F = item ? { ...item } : { id: db.newUid(), name: '', amount: null, freq: 'month', from: todayStr().slice(0, 7), to: '' };
+  openSheet({
+    title: item ? item.name : 'Νέο πάγιο',
+    body: `
+      <label class="field"><span class="lbl">Τι είναι</span>
+        <input class="input" data-field="name" autocapitalize="sentences" placeholder="π.χ. Ενοίκιο" value="${esc(F.name)}"></label>
+      <label class="field"><span class="lbl">Ποσό</span>
+        <span class="money"><input class="input" data-field="amount" inputmode="decimal" placeholder="0" value="${toInput(F.amount)}"><span class="cur">€</span></span></label>
+      <label class="field"><span class="lbl">Πόσο συχνά πληρώνεται</span>
+        <select class="input" data-field="freq">${Object.entries(FREQ).map(([k, [l]]) => `<option value="${k}" ${F.freq === k ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      <div class="grid2">
+        <label class="field"><span class="lbl">Από μήνα</span><input class="input" type="month" data-field="from" value="${esc(F.from)}"></label>
+        <label class="field"><span class="lbl">Έως (προαιρετικό)</span><input class="input" type="month" data-field="to" value="${esc(F.to || '')}"></label>
+      </div>
+      <p class="note">Τρίμηνα και ετήσια μοιράζονται ισόποσα στους μήνες (π.χ. 600 € τον χρόνο = 50 € τον μήνα).</p>`,
+    foot: `<div class="btn-row">${item ? '<button class="btn danger" data-act="delete">Διαγραφή</button>' : ''}
+      <button class="btn primary" data-act="save">Αποθήκευση</button></div>
+      <button class="btn" data-act="back" style="margin-top:8px;min-height:44px;font-size:16px;background:transparent;color:var(--muted)">← Πίσω</button>`,
+    onInput(el) {
+      const f = el.dataset.field;
+      if (f === 'amount') F.amount = parseMoney(el.value);
+      else if (f) F[f] = el.value;
+    },
+    onChange(el) { const f = el.dataset.field; if (f === 'freq' || f === 'from' || f === 'to') F[f] = el.value; },
+    async onAction(act) {
+      if (act === 'back') return openFixed();
+      const { items } = await getFixed();
+      if (act === 'save') {
+        F.name = cleanName(F.name);
+        if (!F.name) return toast('Γράψε τι είναι');
+        if (!Number.isFinite(F.amount) || F.amount <= 0) return toast('Γράψε σωστό ποσό');
+        if (!/^\d{4}-\d{2}$/.test(F.from)) return toast('Διάλεξε μήνα έναρξης');
+        if (F.to && F.to < F.from) return toast('Το «έως» είναι πριν το «από»');
+        F.to = F.to || null;
+        await saveFixed([...items.filter((x) => x.id !== F.id), F]);
+        toast('Αποθηκεύτηκε');
+        openFixed();
+      }
+      if (act === 'delete') {
+        if (!confirm(`Διαγραφή του παγίου «${item.name}»;\n\nΘα φύγει και από τα παλιά αποτελέσματα. Αν απλώς σταμάτησε, βάλε καλύτερα «έως».`)) return;
+        await saveFixed(items.filter((x) => x.id !== F.id));
+        openFixed();
+      }
+    },
+  });
+}
+
 // ---------------------------------------------------------------- διαχείριση: τιμοκατάλογος
 // Οι αλλαγές τιμών ισχύουν για νέες καταχωρήσεις· οι παλιές κρατούν το ποσό που γράφτηκε.
 function openCatalog() {
@@ -1157,6 +1239,7 @@ async function openSettings() {
       <div class="stack">
         <button class="btn" data-act="mgmt-clients">Πελατολόγιο (${S.clients.length})</button>
         <button class="btn" data-act="mgmt-catalog">Τιμοκατάλογος</button>
+        <button class="btn" data-act="mgmt-fixed">Πάγια έξοδα (ενοίκιο κ.λπ.)</button>
       </div>
       <p class="note">Λάθος σε ποσό ή εργασία μιας μέρας: πήγαινε στη μέρα (‹ ›) και πάτα την καταχώρηση.</p>
       <h2>Αποστολή στη Λυδία</h2>
@@ -1193,6 +1276,7 @@ async function openSettings() {
       if (act === 'send') { closeSheet(); openSendSheet(); }
       if (act === 'mgmt-clients') openClients();
       if (act === 'mgmt-catalog') openCatalog();
+      if (act === 'mgmt-fixed') openFixed();
       if (act === 'dl-backup') {
         backup.download(backup.makeFile(JSON.stringify(await backup.buildBackup()), `kommotirio-backup-${backup.stamp()}.json`, 'application/json'));
       }

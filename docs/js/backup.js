@@ -17,7 +17,7 @@ export async function buildBackup() {
   // Τα τοπικά id δεν έχουν νόημα σε άλλη συσκευή — ταυτότητα είναι το uid.
   for (const s of ['visits', 'expenses']) data[s] = data[s].map(({ id, ...rest }) => rest);
   data.clients = data.clients.map(({ id, ...rest }) => rest);
-  const settings = { lydiaPhone: (await db.getMeta('lydiaPhone')) || '' };
+  const settings = { lydiaPhone: (await db.getMeta('lydiaPhone')) || '', fixedCosts: (await db.getMeta('fixedCosts')) || null };
   return { app: BACKUP_APP, format: BACKUP_FORMAT, exportedAt: Date.now(), settings, data };
 }
 
@@ -171,6 +171,12 @@ export async function importText(text) {
     });
   }
   if (obj.settings?.lydiaPhone && !(await db.getMeta('lydiaPhone'))) await db.setMeta('lydiaPhone', obj.settings.lydiaPhone);
+  // Πάγια: κρατιέται η νεότερη λίστα (όλη μαζί).
+  const incFixed = obj.settings?.fixedCosts;
+  if (incFixed?.items) {
+    const cur = await db.getMeta('fixedCosts');
+    if (!cur || (incFixed.updatedAt || 0) > (cur.updatedAt || 0)) { await db.setMeta('fixedCosts', incFixed); res.fixedUpdated = true; }
+  }
   return res;
 }
 

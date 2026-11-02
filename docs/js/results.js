@@ -79,6 +79,7 @@ let D = null; // δεδομένα
 async function load() {
   const [visits, days, expenses, staff, clients] = await Promise.all(['visits', 'days', 'expenses', 'staff', 'clients'].map((s) => db.getAll(s)));
   const phones = new Map(clients.filter((c) => c.phone).map((c) => [c.name, c.phone]));
+  const fixed = ((await db.getMeta('fixedCosts')) || { items: [] }).items;
   visits.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
   const dayMap = new Map(days.map((d) => [d.date, d]));
   const all = [...visits.map((v) => v.date), ...days.map((d) => d.date), ...expenses.map((e) => e.date)].sort();
@@ -91,7 +92,7 @@ async function load() {
   const years = new Set([new Date().getFullYear()]);
   all.forEach((d) => years.add(+d.slice(0, 4)));
   D = {
-    visits, days, expenses, dayMap, hist, phones,
+    visits, days, expenses, dayMap, hist, phones, fixed,
     staffOrder: staff.sort((a, b) => a.order - b.order).map((s) => s.name),
     first: all[0] || today(), last: all[all.length - 1] || today(),
     years: [...years].sort((a, b) => b - a),
@@ -144,6 +145,30 @@ function compareFor(P, cur) {
 
 const inR = (d, r) => d >= r.from && d <= r.to;
 
+// Πάγια: μηνιαίο ισοδύναμο μοιρασμένο στις ημέρες κάθε μήνα. Δεν μετράνε μελλοντικές ημέρες.
+const FREQ_M = { month: 1, quarter: 3, year: 12 };
+function fixedFor(r) {
+  const per = new Map(); let total = 0;
+  const end = r.to < today() ? r.to : today();
+  if (end < r.from) return { total: 0, per };
+  for (const f of D.fixed) {
+    const monthly = f.amount / (FREQ_M[f.freq] || 1);
+    let y = +r.from.slice(0, 4), m = +r.from.slice(5, 7);
+    while (`${y}-${String(m).padStart(2, '0')}` <= end.slice(0, 7)) {
+      const ym = `${y}-${String(m).padStart(2, '0')}`;
+      if (ym >= f.from && (!f.to || ym <= f.to)) {
+        const dim = new Date(y, m, 0).getDate();
+        const ms = `${ym}-01`, me = `${ym}-${String(dim).padStart(2, '0')}`;
+        const s = r.from > ms ? r.from : ms, e = end < me ? end : me;
+        const v = (monthly * (daysBetween(s, e) + 1)) / dim;
+        total += v; per.set(f.name, (per.get(f.name) || 0) + v);
+      }
+      if (++m > 12) { m = 1; y++; }
+    }
+  }
+  return { total: Math.round(total), per };
+}
+
 // ---------------------------------------------------------------- υπολογισμοί
 function aggregate(r) {
   const vis = D.visits.filter((v) => inR(v.date, r) && (!R.staff || v.staff === R.staff));
@@ -153,14 +178,17 @@ function aggregate(r) {
     vis, days, exps,
     services: sum(vis.map((v) => v.total)),
     retail: R.staff ? 0 : sum(days.map((d) => d.retail)),
-    expenses: R.staff ? 0 : sum(exps.map((e) => e.amount)),
+    varExpenses: R.staff ? 0 : sum(exps.map((e) => e.amount)),
+    fixed: R.staff ? { total: 0, per: new Map() } : fixedFor(r),
     visits: vis.length,
     clients: new Set(vis.map((v) => v.client)).size,
     workDays: new Set(vis.map((v) => v.date)).size,
     vat: sum(days.map((d) => d.vat)),
   };
+  a.expenses = a.varExpenses + a.fixed.total;
   a.turnover = a.services + a.retail;
   a.profit = a.turnover - a.expenses;
+  a.profitAfterVat = a.profit - a.vat;
   a.avgTicket = a.visits ? a.services / a.visits : 0;
   a.perDay = a.workDays ? a.turnover / a.workDays : 0;
 
@@ -207,7 +235,7 @@ function buckets(r) {
     b.services = sum(v.map((x) => x.total));
     b.retail = R.staff ? 0 : sum(D.days.filter((x) => inR(x.date, b)).map((x) => x.retail));
     b.turnover = b.services + b.retail;
-    b.expenses = R.staff ? 0 : sum(D.expenses.filter((x) => inR(x.date, b)).map((x) => x.amount));
+    b.expenses = R.staff ? 0 : sum(D.expenses.filter((x) => inR(x.date, b)).map((x) => x.amount)) + fixedFor(b).total;
     b.visits = v.length;
     const pd = D.days.filter((x) => inR(x.date, b) && x.posTotal != null);
     const pdSet = new Set(pd.map((x) => x.date));
@@ -367,12 +395,14 @@ function secSummary(ctx) {
       <div class="tp">Επισκέψεις<span>${x.visits}</span></div>${x.drill ? '<div class="tp">Πάτα ξανά για λεπτομέρειες</div>' : ''}`,
   });
   const rows = bks.filter((x) => x.visits || x.expenses || x.retail);
-  return `
+  const noFixed = !R.staff && !D.fixed.length
+    ? '<div class="warn" style="margin-bottom:12px">⚠️ Δεν έχουν οριστεί <b>πάγια έξοδα</b> (ενοίκιο, λογιστής, ΕΦΚΑ…), οπότε το κέρδος φαίνεται μεγαλύτερο από το πραγματικό. Πρόσθεσέ τα στο ⚙︎ → Διορθώσεις → Πάγια έξοδα.</div>' : '';
+  return `${noFixed}
   <div class="kpis">
     ${R.staff ? stat(`Εργασίες (${esc(R.staff)})`, fmt(a.services), '', delta(a.services, b?.services, { cmp }))
       : stat('Τζίρος', fmt(a.turnover), `εργασίες ${fmt(a.services)} + μεταπώληση ${fmt(a.retail)}`, delta(a.turnover, b?.turnover, { cmp }))}
-    ${R.staff ? '' : stat('Έξοδα', fmt(a.expenses), `${pct(a.expenses, a.turnover)} του τζίρου`, delta(a.expenses, b?.expenses, { cmp, invert: true }))}
-    ${R.staff ? '' : stat('Κέρδος', fmtS(a.profit), `περιθώριο ${pct(a.profit, a.turnover)}`, delta(a.profit, b?.profit, { cmp }), a.profit < 0 ? 'neg' : '')}
+    ${R.staff ? '' : stat('Έξοδα', fmt(a.expenses), `καθημερινά ${fmt(a.varExpenses)} + πάγια ${fmt(a.fixed.total)}`, delta(a.expenses, b?.expenses, { cmp, invert: true }))}
+    ${R.staff ? '' : stat('Κέρδος', fmtS(a.profit), `περιθώριο ${pct(a.profit, a.turnover)}${a.vat ? ` · μετά ΦΠΑ ${fmtS(a.profitAfterVat)}` : ''}`, delta(a.profit, b?.profit, { cmp }), a.profit < 0 ? 'neg' : '')}
     ${stat('Επισκέψεις', num.format(a.visits), `${num.format(a.clients)} διαφορετικές πελάτισσες`, delta(a.visits, b?.visits, { cmp, money: false }))}
     ${stat('Μέσος λογαριασμός', fmt(a.avgTicket), 'ανά επίσκεψη', delta(a.avgTicket, b?.avgTicket, { cmp }))}
     ${stat('Μέσος τζίρος / μέρα', fmt(a.perDay), `${a.workDays} εργάσιμες μέρες`, delta(a.perDay, b?.perDay, { cmp }))}
@@ -417,6 +447,7 @@ function insights(ctx) {
   if (cs.overdue.length) out.push(`<b>${cs.overdue.length}</b> σταθερές πελάτισσες έχουν αργήσει να έρθουν — δες «Πελάτισσες».`);
   if (!R.staff && a.pay.cardPct != null) out.push(`Με κάρτα πληρώνεται το <b>${Math.round(a.pay.cardPct)}%</b> του τζίρου${a.pay.cardClientsPct != null ? ` · περίπου ${Math.round(a.pay.cardClientsPct)}% των πελατισσών` : ''}.`);
   if (!R.staff) {
+    if (a.fixed.total) out.push(`Τα πάγια (${fmt(a.fixed.total)}) είναι το <b>${pct(a.fixed.total, a.turnover)}</b> του τζίρου της περιόδου.`);
     const ex = expenseGroups(a.exps)[0];
     if (ex) out.push(`Μεγαλύτερο έξοδο: <b>${esc(ex.name)}</b> (${fmt(ex.amount)}, ${pct(ex.amount, a.expenses)} των εξόδων).`);
   }
@@ -626,23 +657,30 @@ function expenseGroups(exps) {
 function secExpenses(ctx) {
   const { a, b, cmp } = ctx;
   if (R.staff) return '<p class="empty">Τα έξοδα αφορούν όλο το κατάστημα — βγάλε το φίλτρο υπαλλήλου.</p>';
-  if (!a.exps.length) return '<p class="empty">Κανένα έξοδο στην περίοδο.</p>';
+  if (!a.exps.length && !a.fixed.total) return '<p class="empty">Κανένα έξοδο στην περίοδο. Τα πάγια (ενοίκιο κ.λπ.) μπαίνουν στο ⚙︎ → Διορθώσεις → Πάγια έξοδα.</p>';
+  const fixedRows = [...a.fixed.per].sort((x, y) => y[1] - x[1]);
   const groups = expenseGroups(a.exps);
   const prevG = new Map(expenseGroups(b?.exps || []).map((x) => [norm(x.name), x]));
   const big = [...a.exps].sort((x, y) => y.amount - x.amount).slice(0, 10);
   return `
   <div class="kpis">
-    ${stat('Έξοδα', fmt(a.expenses), `${a.exps.length} καταχωρήσεις`, delta(a.expenses, b?.expenses, { cmp, invert: true }))}
+    ${stat('Έξοδα (σύνολο)', fmt(a.expenses), '', delta(a.expenses, b?.expenses, { cmp, invert: true }))}
+    ${stat('Καθημερινά', fmt(a.varExpenses), `${a.exps.length} καταχωρήσεις`)}
+    ${stat('Πάγια', fmt(a.fixed.total), D.fixed.length ? 'αναλογία της περιόδου' : 'δεν έχουν οριστεί')}
     ${stat('Ως % του τζίρου', pct(a.expenses, a.turnover))}
     ${stat('Ανά εργάσιμη μέρα', fmt(a.workDays ? a.expenses / a.workDays : 0))}
   </div>
   <div class="rgrid">
-    <section class="rcard"><h3>Ανά κατηγορία (περιγραφή)</h3>
-      ${hbars(groups.map((g) => ({ label: g.name, value: g.amount, extra: pct(g.amount, a.expenses) })), fmt, 's2f')}
+    <section class="rcard"><h3>Πάγια — αναλογία της περιόδου</h3>
+      ${fixedRows.length ? hbars(fixedRows.map(([l, v]) => ({ label: l, value: v })), fmt, 's2f')
+        : '<p class="empty">Δεν έχουν οριστεί πάγια. ⚙︎ → Διορθώσεις → Πάγια έξοδα.</p>'}
+      <p class="note">Κάθε πάγιο μοιράζεται στις ημέρες του μήνα (π.χ. ενοίκιο 600 € → 2 εβδομάδες ≈ 280 €). Μελλοντικές ημέρες δεν χρεώνονται.</p></section>
+    <section class="rcard"><h3>Καθημερινά — ανά κατηγορία (περιγραφή)</h3>
+      ${groups.length ? hbars(groups.map((g) => ({ label: g.name, value: g.amount, extra: pct(g.amount, a.varExpenses) })), fmt, 's2f') : '<p class="empty">Κανένα καθημερινό έξοδο.</p>'}
       <div class="tscroll"><table class="rtable"><thead><tr><th class="txt">Περιγραφή</th><th>Ποσό</th><th>Φορές</th>${cmp ? `<th>vs ${esc(cmp.label)}</th>` : ''}</tr></thead>
       <tbody>${groups.map((g) => { const p = prevG.get(norm(g.name)); return `<tr><th class="txt">${esc(g.name)}</th><td>${fmt(g.amount)}</td><td>${g.count}</td>${cmp ? `<td>${p ? fmtS(g.amount - p.amount) : 'νέο'}</td>` : ''}</tr>`; }).join('')}</tbody></table></div>
       <p class="note">Ομαδοποίηση με βάση την περιγραφή — γράφε ίδιες λέξεις (π.χ. πάντα «Βαφές») για καθαρή εικόνα.</p></section>
-    <section class="rcard"><h3>Τα 10 μεγαλύτερα</h3>
+    <section class="rcard"><h3>Τα 10 μεγαλύτερα καθημερινά</h3>
       <div class="tscroll"><table class="rtable"><thead><tr><th>Ημέρα</th><th class="txt">Περιγραφή</th><th>Ποσό</th></tr></thead>
       <tbody>${big.map((e) => `<tr><th>${fDate(e.date)}</th><td class="txt">${esc(e.desc || '—')}</td><td>${fmt(e.amount)}</td></tr>`).join('')}</tbody></table></div></section>
   </div>`;
