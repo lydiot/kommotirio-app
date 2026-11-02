@@ -1,9 +1,9 @@
 import * as db from './db.js';
 import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
-import { renderResults } from './results.js';
+import { renderResults, overdueClients } from './results.js';
 
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.7.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -137,6 +137,7 @@ const S = {
   staff: [],
   clients: [],
   persisted: null,
+  phones: new Map(), // όνομα → τηλέφωνο (προαιρετικό)
   device: null, // τυχαίο id αυτής της συσκευής (για το «τι δεν έχει σταλεί»)
 };
 
@@ -148,7 +149,9 @@ const blankDay = (date) => ({
 async function loadStatic() {
   S.categories = (await db.getAll('categories')).sort((a, b) => a.order - b.order);
   S.staff = (await db.getAll('staff')).filter((s) => s.active).sort((a, b) => a.order - b.order);
-  S.clients = (await db.getAll('clients')).map((c) => c.name).sort((a, b) => a.localeCompare(b, 'el'));
+  const cl = await db.getAll('clients');
+  S.clients = cl.map((c) => c.name).sort((a, b) => a.localeCompare(b, 'el'));
+  S.phones = new Map(cl.filter((c) => c.phone).map((c) => [c.name, c.phone]));
 }
 
 // Φορτώνει την ημέρα S.date. Αν στο μεταξύ άλλαξε ημέρα (γρήγορα πατήματα ‹ ›),
@@ -248,11 +251,76 @@ function renderVisits() {
       <div class="stat"><div class="k">Πελάτες</div><div class="v">${S.visits.length}</div></div>
       ${staffChips ? `<div class="stat wide"><div class="k">Ανά υπάλληλο</div><div class="staff-chips">${staffChips}</div></div>` : ''}
     </div>
+    <div id="call-card"></div>
     <div style="margin-top:14px">
       <button class="btn primary big" data-act="new-visit" ${S.day.locked ? 'disabled' : ''}>＋ Νέος πελάτης</button>
     </div>
     <h2>Καταχωρήσεις</h2>
     <div class="list">${rows || '<div class="empty">Καμία καταχώρηση ακόμα.</div>'}</div>`;
+}
+
+// ---------------------------------------------------------------- 📞 έχουν αργήσει
+// Μόνο στη σημερινή μέρα. «Πήρα τηλέφωνο» = κρύβεται 3 εβδομάδες· «Δεν έρχεται πια» = κρύβεται
+// μέχρι να ξανάρθει. Κάθε νέα επίσκεψη ακυρώνει αυτόματα την απόκρυψη.
+async function callList() {
+  const snooze = (await db.getMeta('callSnooze')) || {};
+  const now = todayStr();
+  return (await overdueClients()).filter((c) => {
+    const s = snooze[c.name];
+    if (!s || c.last > s.last) return true;
+    return s.until !== 'never' && s.until <= now;
+  });
+}
+
+async function renderCallCard() {
+  const box = $('#call-card');
+  if (!box) return;
+  if (S.date !== todayStr()) { box.innerHTML = ''; return; }
+  const list = await callList();
+  if (!$('#call-card')) return;
+  box.innerHTML = list.length ? `<button class="call-card" data-act="open-calls">
+      <span class="cc-icon">📞</span>
+      <span class="cc-text"><b>${list.length} ${list.length === 1 ? 'πελάτισσα έχει' : 'πελάτισσες έχουν'} αργήσει</b>
+        <span>${esc(list.slice(0, 3).map((c) => c.name).join(', '))}${list.length > 3 ? '…' : ''}</span></span>
+      <span class="cc-go">›</span></button>` : '';
+}
+
+async function openCalls() {
+  const list = await callList();
+  const every = (e) => (e < 14 ? `${Math.round(e)} ημέρες` : `${String(Math.round((e / 7) * 10) / 10).replace('.', ',')} εβδομάδες`);
+  const fmtD = (d) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).toLocaleDateString('el-GR', { day: 'numeric', month: 'short' }); };
+  openSheet({
+    title: `📞 Έχουν αργήσει (${list.length})`,
+    body: `<p class="note" style="margin-top:0">Σταθερές πελάτισσες που άργησαν πολύ σε σχέση με το συνηθισμένο τους. Πρώτες όσες φέρνουν τα περισσότερα.</p>
+      ${list.map((c) => {
+        const ph = S.phones.get(c.name);
+        return `<div class="call-item">
+          <div class="ci-head"><b>${nameHtml(c.name)}</b><span>${fmt(c.spend)}</span></div>
+          <div class="ci-sub">Έρχεται κάθε ~${every(c.every)} · τελευταία ${fmtD(c.last)} (πριν ${c.since} ημέρες)<br>Συνήθως: ${esc(c.fav || '')} · ${esc(c.staff || '')}</div>
+          <div class="ci-actions">
+            ${ph ? `<a class="btn primary" href="${telHref(ph)}">📞 ${esc(ph)}</a>` : `<button class="btn" data-act="add-phone" data-v="${esc(c.name)}">＋ Τηλέφωνο</button>`}
+            <button class="btn" data-act="called" data-v="${esc(c.name)}" data-last="${c.last}">✓ Πήρα</button>
+            <button class="btn ghost" data-act="gone" data-v="${esc(c.name)}" data-last="${c.last}">Δεν έρχεται πια</button>
+          </div></div>`;
+      }).join('') || '<div class="empty">Καμία — όλες έρχονται στην ώρα τους 🎉</div>'}`,
+    async onAction(act, el) {
+      if (act === 'called' || act === 'gone') {
+        const snooze = (await db.getMeta('callSnooze')) || {};
+        snooze[el.dataset.v] = { last: el.dataset.last, until: act === 'gone' ? 'never' : addDays(todayStr(), 21) };
+        await db.setMeta('callSnooze', snooze);
+        toast(act === 'gone' ? 'Δεν θα εμφανίζεται (εκτός αν ξανάρθει)' : 'Κρύφτηκε για 3 εβδομάδες');
+        await renderCallCard();
+        openCalls();
+      }
+      if (act === 'add-phone') {
+        const ph = cleanPhone(prompt(`Τηλέφωνο για «${el.dataset.v}»:`) || '');
+        if (!ph) return;
+        await setClientPhone(el.dataset.v, ph);
+        await loadStatic();
+        openCalls();
+      }
+    },
+  });
 }
 
 function renderExpenses() {
@@ -353,6 +421,7 @@ function render() {
   renderHeader();
   renderTabs();
   renderVisits();
+  renderCallCard();
   renderExpenses();
   renderTill();
   renderBackupBanner();
@@ -440,6 +509,8 @@ function openVisit(existing) {
       <label class="field"><span class="lbl">Όνομα</span>
         <input class="input" data-field="first" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" value="${esc(V.newName.first)}"></label>
     </div>
+    <label class="field"><span class="lbl">Τηλέφωνο (προαιρετικό)</span>
+      <input class="input" data-field="phone" type="tel" inputmode="tel" autocomplete="off" placeholder="69…" value="${esc(V.newName.phone || '')}"></label>
     <div id="v-similar"></div>
     <button class="item-x" style="color:var(--accent)" data-act="search-again">← Αναζήτηση στο πελατολόγιο</button>`;
   const renderSimilar = () => {
@@ -490,6 +561,7 @@ function openVisit(existing) {
       const f = el.dataset.field;
       if (f === 'client') { V.client = el.value; renderSuggest(); return; }
       if (f === 'surname' || f === 'first') { V.newName[f] = el.value; renderSimilar(); return; }
+      if (f === 'phone' && V.newName) { V.newName.phone = el.value; return; }
       const it = V.items[+el.dataset.i];
       if (!it) return;
       if (f === 'note') it.note = el.value;
@@ -582,7 +654,9 @@ async function saveVisit(V, existing) {
   // Νέο όνομα → μπαίνει στο πελατολόγιο για το autocomplete.
   if (!S.clients.some((n) => norm(n) === norm(client))) {
     try {
-      await db.put('clients', { name: client, source: 'app', createdAt: now });
+      const phone = cleanPhone(V.newName?.phone);
+      await db.put('clients', { name: client, source: 'app', createdAt: now, updatedAt: now, ...(phone ? { phone } : {}) });
+      if (phone) S.phones.set(client, phone);
       S.clients.push(client);
       S.clients.sort((a, b) => a.localeCompare(b, 'el'));
     } catch { /* υπάρχει ήδη με άλλη γραφή — δεν πειράζει */ }
@@ -836,8 +910,10 @@ async function renameClient(oldName, newName) {
   const visits = (await db.getAll('visits')).filter((v) => v.client === oldName);
   await db.transaction(['clients', 'visits', 'deleted'], (tx) => {
     const cs = tx.objectStore('clients');
-    if (target && rec && target.id !== rec.id) cs.delete(rec.id);
-    else if (rec) cs.put({ ...rec, name: newName, createdAt: now });
+    if (target && rec && target.id !== rec.id) {
+      cs.delete(rec.id);
+      if (rec.phone && !target.phone) cs.put({ ...target, phone: rec.phone, updatedAt: now });
+    } else if (rec) cs.put({ ...rec, name: newName, createdAt: now, updatedAt: now });
     else if (!target) cs.add({ name: newName, source: 'app', createdAt: now });
     tx.objectStore('deleted').put(tomb('clients', oldName));
     tx.objectStore('deleted').delete(`client:${newName}`);
@@ -845,6 +921,16 @@ async function renameClient(oldName, newName) {
     visits.forEach((v) => vs.put({ ...v, client: newName, updatedAt: now, dev: S.device }));
   });
   return visits.length;
+}
+
+const cleanPhone = (s) => String(s || '').replace(/[^\d+ ]/g, '').replace(/\s+/g, ' ').trim();
+const telHref = (ph) => `tel:${ph.replace(/[^\d+]/g, '')}`;
+
+async function setClientPhone(name, phone) {
+  const rec = await findClient(name);
+  const now = Date.now();
+  if (rec) await db.put('clients', { ...rec, phone: phone || undefined, updatedAt: now });
+  else await db.put('clients', { name, source: 'app', createdAt: now, updatedAt: now, phone });
 }
 
 async function deleteClient(name) {
@@ -855,9 +941,10 @@ async function deleteClient(name) {
   });
 }
 
-async function addClient(name) {
+async function addClient(name, phone) {
   await db.transaction(['clients', 'deleted'], (tx) => {
-    tx.objectStore('clients').add({ name, source: 'app', createdAt: Date.now() });
+    const now = Date.now();
+    tx.objectStore('clients').add({ name, source: 'app', createdAt: now, updatedAt: now, ...(phone ? { phone } : {}) });
     tx.objectStore('deleted').delete(`client:${name}`);
   });
 }
@@ -889,7 +976,8 @@ function openClients(query = '') {
 }
 
 async function openClientEdit(name, backQuery) {
-  const N = name ? splitName(name) : { surname: '', first: '' };
+  const N = name ? { ...splitName(name), phone: S.phones.get(name) || '' } : { surname: '', first: '', phone: '' };
+  const oldPhone = N.phone;
   const visitCount = name ? (await db.getAll('visits')).filter((v) => v.client === name).length : 0;
   openSheet({
     title: name ? 'Επεξεργασία πελάτη' : 'Νέος πελάτης',
@@ -900,6 +988,9 @@ async function openClientEdit(name, backQuery) {
         <label class="field"><span class="lbl">Όνομα</span>
           <input class="input" data-field="first" autocapitalize="words" autocorrect="off" spellcheck="false" value="${esc(N.first)}"></label>
       </div>
+      <label class="field"><span class="lbl">Τηλέφωνο (προαιρετικό)</span>
+        <input class="input" data-field="phone" type="tel" inputmode="tel" autocomplete="off" placeholder="69…" value="${esc(N.phone)}"></label>
+      ${N.phone ? `<a class="btn" style="text-decoration:none;margin-bottom:12px" href="${telHref(N.phone)}">📞 Κλήση ${esc(N.phone)}</a>` : ''}
       ${name ? `<p class="note">Καταχωρήσεις με αυτό το όνομα: <b>${visitCount}</b>. Αν αλλάξεις το όνομα, αλλάζει και σε αυτές.
         Αν γράψεις όνομα που υπάρχει ήδη, οι δύο πελάτες ενώνονται.</p>` : ''}`,
     foot: `<div class="btn-row">
@@ -917,12 +1008,17 @@ async function openClientEdit(name, backQuery) {
           if (clash) return toast(`Υπάρχει ήδη: ${clash}`);
           const sim = similarClients(N.surname, N.first);
           if (sim.length && !confirm(`Υπάρχει ήδη παρόμοιο όνομα:\n${sim.join('\n')}\n\nΣίγουρα είναι ΝΕΟΣ πελάτης;`)) return;
-          await addClient(newName);
+          await addClient(newName, cleanPhone(N.phone));
           toast(`Προστέθηκε: ${newName}`);
-        } else if (newName !== name) {
-          if (clash && !confirm(`Το «${clash}» υπάρχει ήδη.\nΝα ενωθούν σε έναν πελάτη;`)) return;
-          const n = await renameClient(name, clash || newName);
-          toast(`Αποθηκεύτηκε${n ? ` (και σε ${n} ${n === 1 ? 'καταχώρηση' : 'καταχωρήσεις'})` : ''}`);
+        } else {
+          let finalName = name;
+          if (newName !== name) {
+            if (clash && !confirm(`Το «${clash}» υπάρχει ήδη.\nΝα ενωθούν σε έναν πελάτη;`)) return;
+            finalName = clash || newName;
+            const n = await renameClient(name, finalName);
+            toast(`Αποθηκεύτηκε${n ? ` (και σε ${n} ${n === 1 ? 'καταχώρηση' : 'καταχωρήσεις'})` : ''}`);
+          } else toast('Αποθηκεύτηκε');
+          if (cleanPhone(N.phone) !== cleanPhone(oldPhone)) await setClientPhone(finalName, cleanPhone(N.phone));
         }
         await loadStatic();
         await refreshDay();
@@ -1220,6 +1316,7 @@ function bind() {
     if (!el) return;
     const act = el.dataset.act;
     if (act === 'new-visit') openVisit();
+    if (act === 'open-calls') openCalls();
     if (act === 'edit-visit') openVisit(S.visits.find((v) => v.id === +el.dataset.id));
     if (act === 'new-expense') openExpense();
     if (act === 'pos-add') {

@@ -4,7 +4,6 @@
 //   Εργασίες = άθροισμα επισκέψεων · Τζίρος = Εργασίες + Μεταπώληση · Κέρδος = Τζίρος − Έξοδα
 //   POS = τρόπος πληρωμής (όχι έσοδο). Κάρτα % = POS / τζίρος, μόνο σε ημέρες με καταχωρημένο POS.
 //   Πληρωμές χωρίς κάρτα (εκτίμηση) = επισκέψεις − γραμμές POS, σε ημέρες με γραμμές POS.
-//   Ώρα = ώρα καταχώρησης στην εφαρμογή.
 
 import * as db from './db.js';
 
@@ -30,6 +29,7 @@ const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0
 const addDays = (s, n) => { const d = toD(s); d.setDate(d.getDate() + n); return ymd(d); };
 const daysBetween = (a, b) => Math.round((toD(b) - toD(a)) / 86400000);
 const today = () => ymd(new Date());
+const telLink = (ph) => (ph ? `<a class="tel" href="tel:${esc(ph.replace(/[^\d+]/g, ''))}" onclick="event.stopPropagation()">📞 ${esc(ph)}</a>` : '');
 const fDate = (s) => toD(s).toLocaleDateString('el-GR', { day: 'numeric', month: 'short', year: 'numeric' });
 const fDateW = (s) => toD(s).toLocaleDateString('el-GR', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 const median = (a) => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -43,22 +43,42 @@ function orthodoxEaster(y) {
   return ymd(dt);
 }
 const HOLIDAYS = {
-  xmas: { label: 'Χριστούγεννα – Φώτα', range: (y) => ({ from: `${y}-12-15`, to: `${y + 1}-01-06` }) },
-  carnival: { label: 'Απόκριες (3 εβδ. πριν την Καθαρά Δευτέρα)', range: (y) => { const cm = addDays(orthodoxEaster(y), -48); return { from: addDays(cm, -21), to: addDays(cm, -1) }; } },
-  easter: { label: 'Πάσχα (2 εβδ. πριν)', range: (y) => { const e = orthodoxEaster(y); return { from: addDays(e, -14), to: addDays(e, -1) }; } },
-  summer: { label: 'Καλοκαίρι (Ιούλ–Αύγ)', range: (y) => ({ from: `${y}-07-01`, to: `${y}-08-31` }) },
+  easter: { label: 'Πάσχα (2 εβδομάδες πριν)', range: (y) => { const e = orthodoxEaster(y); return { from: addDays(e, -14), to: addDays(e, -1) }; } },
+  xmas: { label: 'Χριστούγεννα – Φώτα (15/12–6/1)', range: (y) => ({ from: `${y}-12-15`, to: `${y + 1}-01-06` }) },
 };
+
+// ---------------------------------------------------------------- «έχουν αργήσει»
+// Πελάτισσα με ≥2 επισκέψεις που δεν ήρθε για > 1,5× το συνηθισμένο της διάστημα και ≥ 4 εβδομάδες.
+export const isOverdue = (every, visits, since) => every != null && visits >= 2 && since >= 28 && since > every * 1.5;
+
+// Για την καθημερινή οθόνη: όλο το ιστορικό, ως σήμερα. Ταξινόμηση: όσες φέρνουν τα περισσότερα πρώτες.
+export async function overdueClients() {
+  const visits = await db.getAll('visits');
+  const by = new Map();
+  for (const v of visits) { if (!by.has(v.client)) by.set(v.client, []); by.get(v.client).push(v); }
+  const out = [], now = today();
+  for (const [name, vs] of by) {
+    const dates = [...new Set(vs.map((v) => v.date))].sort();
+    const gaps = dates.slice(1).map((d, i) => daysBetween(dates[i], d));
+    const every = median(gaps), last = dates[dates.length - 1], since = daysBetween(last, now);
+    if (!isOverdue(every, dates.length, since)) continue;
+    out.push({ name, every, last, since, visits: dates.length, spend: sum(vs.map((v) => v.total)),
+      fav: mode(vs.flatMap((v) => v.items.map((i) => i.cat))), staff: mode(vs.map((v) => v.staff)) });
+  }
+  return out.sort((a, b) => b.spend - a.spend);
+}
 
 // ---------------------------------------------------------------- κατάσταση
 const R = {
   kind: 'year', year: new Date().getFullYear(), month: new Date().getMonth(), quarter: Math.floor(new Date().getMonth() / 3),
-  holiday: 'xmas', from: null, to: null, staff: '', compare: 'prev', section: 'summary',
+  holiday: 'easter', from: null, to: null, staff: '', compare: 'prev', section: 'summary',
   clientQuery: '', clientSort: 'spend', clientLimit: 40, clientOpen: null, catSort: 'count',
 };
 let D = null; // δεδομένα
 
 async function load() {
-  const [visits, days, expenses, staff] = await Promise.all(['visits', 'days', 'expenses', 'staff'].map((s) => db.getAll(s)));
+  const [visits, days, expenses, staff, clients] = await Promise.all(['visits', 'days', 'expenses', 'staff', 'clients'].map((s) => db.getAll(s)));
+  const phones = new Map(clients.filter((c) => c.phone).map((c) => [c.name, c.phone]));
   visits.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
   const dayMap = new Map(days.map((d) => [d.date, d]));
   const all = [...visits.map((v) => v.date), ...days.map((d) => d.date), ...expenses.map((e) => e.date)].sort();
@@ -71,7 +91,7 @@ async function load() {
   const years = new Set([new Date().getFullYear()]);
   all.forEach((d) => years.add(+d.slice(0, 4)));
   D = {
-    visits, days, expenses, dayMap, hist,
+    visits, days, expenses, dayMap, hist, phones,
     staffOrder: staff.sort((a, b) => a.order - b.order).map((s) => s.name),
     first: all[0] || today(), last: all[all.length - 1] || today(),
     years: [...years].sort((a, b) => b - a),
@@ -222,7 +242,7 @@ function clientStats(r, a) {
       visits: p?.visits || 0, spend: p?.spend || 0, avg: p ? p.spend / p.visits : 0,
       fav: p ? mode(p.cats) : mode(upto.flatMap((v) => v.items.map((i) => i.cat))),
       favStaff: p ? mode(p.staff) : mode(upto.map((v) => v.staff)),
-      overdue: med != null && dates.length >= 2 && since >= 28 && since > med * 1.5,
+      overdue: isOverdue(med, dates.length, since),
     });
   }
   const active = all.filter((c) => c.visits);
@@ -318,16 +338,6 @@ function hbars(rows, valFmt = fmt, cls = '') {
     </div>`).join('')}</div>`;
 }
 
-function heatmap(matrix, rowLabels, colLabels, title) {
-  const max = Math.max(1, ...matrix.flat());
-  return `<div class="tscroll"><table class="heat" aria-label="${esc(title)}">
-    <thead><tr><th></th>${colLabels.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
-    <tbody>${matrix.map((row, i) => `<tr><th>${rowLabels[i]}</th>${row.map((v, j) => {
-      const k = v / max;
-      return `<td title="${rowLabels[i]} ${colLabels[j]}:00 — ${v} επισκέψεις" style="background:color-mix(in srgb, var(--series-1) ${Math.round(k * 92)}%, var(--surface));color:${k > 0.55 ? '#fff' : 'var(--text)'}">${v || ''}</td>`;
-    }).join('')}</tr>`).join('')}</tbody></table></div>`;
-}
-
 const legend = (items) => `<div class="legend">${items.map(([cls, l]) => `<span><i class="sw ${cls}"></i>${l}</span>`).join('')}</div>`;
 
 function delta(cur, prev, { invert = false, money = true, cmp } = {}) {
@@ -397,8 +407,6 @@ function insights(ctx) {
   const wd = weekdayStats(a);
   const topWd = wd.filter((w) => w.days).sort((x, y) => y.avg - x.avg)[0];
   if (topWd) out.push(`Πιο δυνατή μέρα της εβδομάδας: <b>${WD_LONG[topWd.d]}</b> (μέσος όρος ${fmt(topWd.avg)}).`);
-  const hours = hourCounts(a.vis); const hv = Object.entries(hours).sort((x, y) => y[1] - x[1]);
-  if (hv.length > 2) out.push(`Ώρα αιχμής: <b>${hv[0][0]}:00–${+hv[0][0] + 1}:00</b>.`);
   const byCount = [...ss.cats].sort((x, y) => y.count - x.count)[0], byAmt = [...ss.cats].sort((x, y) => y.amount - x.amount)[0];
   if (byCount) out.push(`Πιο δημοφιλής εργασία: <b>${esc(byCount.name)}</b> (${byCount.count} φορές)${byAmt && byAmt.name !== byCount.name ? ` · φέρνει τα περισσότερα: <b>${esc(byAmt.name)}</b> (${fmt(byAmt.amount)})` : ''}.`);
   if (ss.pairs[0]) out.push(`Συχνότερος συνδυασμός: <b>${esc(ss.pairs[0][0])}</b> (${ss.pairs[0][1]} φορές).`);
@@ -428,21 +436,10 @@ function weekdayStats(a) {
     return { d, days: w.dates.size, amount: w.amount, avg: w.amount / w.dates.size, avgVisits: w.visits / w.dates.size };
   });
 }
-function hourCounts(vis) {
-  const h = {};
-  vis.forEach((v) => { const x = new Date(v.createdAt).getHours(); h[x] = (h[x] || 0) + 1; });
-  return h;
-}
-
 function secTime(ctx) {
   const { a } = ctx;
   if (!a.visits) return '<p class="empty">Καμία επίσκεψη στην περίοδο.</p>';
   const wd = weekdayStats(a).filter((w) => w.days);
-  const hc = hourCounts(a.vis); const hs = Object.keys(hc).map(Number);
-  const hMin = Math.min(...hs), hMax = Math.max(...hs);
-  const cols = []; for (let h = hMin; h <= hMax; h++) cols.push(h);
-  const mat = WD_ORDER.map((d) => cols.map((h) => a.vis.filter((v) => toD(v.date).getDay() === d && new Date(v.createdAt).getHours() === h).length));
-  const rowsUsed = WD_ORDER.map((d, i) => [d, mat[i]]).filter(([, r]) => r.some((x) => x));
   const byDate = new Map(); a.vis.forEach((v) => { const x = byDate.get(v.date) || { s: 0, n: 0 }; x.s += v.total; x.n++; byDate.set(v.date, x); });
   const topDays = [...byDate].sort((x, y) => y[1].s - x[1].s).slice(0, 10);
   const span = daysBetween(ctx.per.from, ctx.per.to);
@@ -458,10 +455,6 @@ function secTime(ctx) {
     ${hbars(wd.map((w) => ({ label: WD_LONG[w.d], value: w.avg, extra: `${num.format(w.avgVisits)} επισκ.` })))}
     <div class="tscroll"><table class="rtable"><thead><tr><th>Ημέρα</th><th>Μέρες</th><th>Μ.ο. εργασιών</th><th>Μ.ο. επισκέψεων</th><th>Σύνολο</th></tr></thead>
     <tbody>${wd.map((w) => `<tr><th>${WD_LONG[w.d]}</th><td>${w.days}</td><td>${fmt(w.avg)}</td><td>${num.format(w.avgVisits)}</td><td>${fmt(w.amount)}</td></tr>`).join('')}</tbody></table></div>
-  </section>
-  <section class="rcard"><h3>Ημέρα × ώρα (πλήθος επισκέψεων)</h3>
-    ${heatmap(rowsUsed.map(([, r]) => r), rowsUsed.map(([d]) => WD[d]), cols, 'Ημέρα και ώρα')}
-    <p class="note">Ώρα = πότε καταχωρήθηκε η επίσκεψη στην εφαρμογή. Όσο πιο σκούρο, τόσο περισσότερη κίνηση.</p>
   </section>
   ${season}
   <section class="rcard"><h3>Οι 10 καλύτερες μέρες</h3>
@@ -489,8 +482,8 @@ function secClients(ctx) {
   <section class="rcard"><h3>Πόσο συχνά έρχονται</h3>${hbars(cs.buckets, (v) => `${v}`, 'seq')}
     <p class="note">Για τις πελάτισσες της περιόδου, με βάση όλο το ιστορικό τους.</p></section>
   <section class="rcard"><h3>📞 Έχουν αργήσει — σήμερα (${cs.overdue.length})</h3>
-    ${cs.overdue.length ? `<div class="tscroll"><table class="rtable clickable"><thead><tr><th>Πελάτισσα</th><th>Συνήθως</th><th>Τελευταία</th><th>Πριν</th><th>Σύνολο</th></tr></thead>
-    <tbody>${cs.overdue.slice(0, 25).map((c) => `<tr data-client="${esc(c.name)}"><th>${esc(c.name)}</th><td>κάθε ${every(c.every)}</td><td>${fDate(c.last)}</td><td>${c.since} ημ.</td><td>${fmt(c.spendAll)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Καμία — όλες έρχονται στην ώρα τους.</p>'}
+    ${cs.overdue.length ? `<div class="tscroll"><table class="rtable clickable"><thead><tr><th>Πελάτισσα</th><th class="txt">Τηλέφωνο</th><th>Συνήθως</th><th>Πριν</th><th>Σύνολο</th></tr></thead>
+    <tbody>${cs.overdue.slice(0, 25).map((c) => `<tr data-client="${esc(c.name)}"><th>${esc(c.name)}</th><td class="txt">${telLink(D.phones.get(c.name)) || '—'}</td><td>κάθε ${every(c.every)}</td><td>${c.since} ημ.</td><td>${fmt(c.spendAll)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Καμία — όλες έρχονται στην ώρα τους.</p>'}
     <p class="note">Πελάτισσες με ≥2 επισκέψεις που δεν ήρθαν για πάνω από 1,5× το συνηθισμένο τους διάστημα (και ≥4 εβδομάδες). ${cs.oneTimersGone ? `Επιπλέον ${cs.oneTimersGone} ήρθαν μία φορά και δεν ξαναφάνηκαν για 3+ μήνες.` : ''}</p></section>
   </div>
   <section class="rcard wide"><h3>Όλες οι πελάτισσες της περιόδου (${list.length})</h3>
@@ -515,7 +508,7 @@ function clientProfile(name, ctx) {
   const nextDue = c?.every ? addDays(c.last, Math.round(c.every)) : null;
   return `
   <button class="btn" data-act="client-back" style="width:auto;margin-bottom:12px">← Πίσω στις πελάτισσες</button>
-  <h2 class="rtitle" style="margin-top:0">${esc(name)}</h2>
+  <h2 class="rtitle" style="margin-top:0">${esc(name)} ${telLink(D.phones.get(name))}</h2>
   <div class="kpis">
     ${stat('Επισκέψεις (όλες)', hv.length, c ? `από ${fDate(c.first)}` : '')}
     ${stat('Σύνολο', fmt(sum(hv.map((v) => v.total))), `μέσος ${fmt(sum(hv.map((v) => v.total)) / (hv.length || 1))}`)}
@@ -664,14 +657,14 @@ function filtersHtml() {
     year: yearSel,
     month: `${yearSel}<label><span>Μήνας</span><select class="input" data-r="month">${MONTHS_LONG.map((m, i) => `<option value="${i}" ${R.month === i ? 'selected' : ''}>${m}</option>`).join('')}</select></label>`,
     quarter: `${yearSel}<label><span>Τρίμηνο</span><select class="input" data-r="quarter">${[0, 1, 2, 3].map((q) => `<option value="${q}" ${R.quarter === q ? 'selected' : ''}>${q + 1}ο (${MONTHS[q * 3]}–${MONTHS[q * 3 + 2]})</option>`).join('')}</select></label>`,
-    holiday: `${yearSel}<label><span>Περίοδος γιορτών</span><select class="input" data-r="holiday">${Object.entries(HOLIDAYS).map(([k, h]) => `<option value="${k}" ${R.holiday === k ? 'selected' : ''}>${h.label}</option>`).join('')}</select></label>`,
+    holiday: `${yearSel}<label><span>Γιορτή</span><select class="input" data-r="holiday">${Object.entries(HOLIDAYS).map(([k, h]) => `<option value="${k}" ${R.holiday === k ? 'selected' : ''}>${h.label}</option>`).join('')}</select></label>`,
     range: `<label><span>Από</span><input type="date" class="input" data-r="from" value="${R.from || D.first}"></label><label><span>Έως</span><input type="date" class="input" data-r="to" value="${R.to || D.last}"></label>`,
     all: '',
   }[R.kind];
   const staffNames = [...new Set([...D.staffOrder, ...D.visits.map((v) => v.staff)])];
   return `<div class="filters">
     <label><span>Περίοδος</span><select class="input" data-r="kind">
-      ${[['year', 'Έτος'], ['month', 'Μήνας'], ['quarter', 'Τρίμηνο'], ['holiday', 'Γιορτές / εποχές'], ['range', 'Από – έως'], ['all', 'Όλα τα δεδομένα']].map(([k, l]) => `<option value="${k}" ${R.kind === k ? 'selected' : ''}>${l}</option>`).join('')}
+      ${[['year', 'Έτος'], ['month', 'Μήνας'], ['quarter', 'Τρίμηνο'], ['holiday', 'Γιορτές (Πάσχα / Χριστούγεννα)'], ['range', 'Από – έως'], ['all', 'Όλα τα δεδομένα']].map(([k, l]) => `<option value="${k}" ${R.kind === k ? 'selected' : ''}>${l}</option>`).join('')}
     </select></label>
     ${extra}
     <label><span>Υπάλληλος</span><select class="input" data-r="staff"><option value="">Όλοι</option>${staffNames.map((n) => `<option ${R.staff === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>

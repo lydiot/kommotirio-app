@@ -159,6 +159,17 @@ export async function importText(text) {
   });
 
   res.clientsAdded = await addClients(inc.clients || [], 'import');
+  // Τηλέφωνα: κρατιέται η νεότερη αλλαγή.
+  const localClients = new Map((await db.getAll('clients')).map((c) => [c.name, c]));
+  const phoneUpd = (inc.clients || []).filter((c) => {
+    const cur = localClients.get(c.name);
+    return cur && (c.updatedAt || 0) > (cur.updatedAt || 0) && (c.phone || '') !== (cur.phone || '');
+  });
+  if (phoneUpd.length) {
+    await db.transaction(['clients'], (tx) => {
+      phoneUpd.forEach((c) => tx.objectStore('clients').put({ ...localClients.get(c.name), phone: c.phone || undefined, updatedAt: c.updatedAt }));
+    });
+  }
   if (obj.settings?.lydiaPhone && !(await db.getMeta('lydiaPhone'))) await db.setMeta('lydiaPhone', obj.settings.lydiaPhone);
   return res;
 }
@@ -172,11 +183,12 @@ async function addClients(list, source) {
   for (const item of list) {
     const name = cleanName(typeof item === 'string' ? item : item.name);
     const createdAt = typeof item === 'string' ? 0 : (item.createdAt || 0);
+    const extra = typeof item === 'string' ? {} : { ...(item.phone ? { phone: item.phone } : {}), ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}) };
     if (!name || have.has(name)) continue;
     const t = tombs.get(name);
     if (t && t.deletedAt >= createdAt) continue;
     have.add(name);
-    add.push({ name, source, createdAt });
+    add.push({ name, source, createdAt, ...extra });
   }
   if (add.length) {
     await db.transaction(['clients'], (tx) => {
