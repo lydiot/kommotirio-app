@@ -2,7 +2,7 @@ import * as db from './db.js';
 import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
 
-const APP_VERSION = '2.1.0';
+const APP_VERSION = '2.2.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -60,6 +60,44 @@ function nameHtml(name, q = '') {
   });
   flush();
   return out;
+}
+
+// Απόσταση Levenshtein (πόσα γράμματα διαφέρουν), με όριο για ταχύτητα.
+function editDistance(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      rowMin = Math.min(rowMin, cur[j]);
+    }
+    if (rowMin > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+const tolerance = (word) => (word.length <= 4 ? 1 : 2);
+
+// «Μήπως εννοείς…;» — υπάρχοντα ονόματα που μοιάζουν με το νέο (ορθογραφία,
+// τόνοι, ανάποδη σειρά, ή ίδιο επώνυμο με παρόμοιο όνομα).
+function similarClients(surname, first) {
+  const s = norm(cleanName(surname)), f = norm(cleanName(first));
+  if (s.length < 3) return [];
+  const scored = [];
+  for (const name of S.clients) {
+    const [cs = '', ...rest] = norm(name).split(' ');
+    const cf = rest.join(' ');
+    const dS = editDistance(s, cs, 2), dF = f ? editDistance(f, cf, 2) : 0;
+    const swapped = f && editDistance(s, cf, 1) <= 1 && editDistance(f, cs, 1) <= 1;
+    let score = null;
+    if (dS <= tolerance(s) && (!f || !cf || dF <= tolerance(f))) score = dS + dF;      // σχεδόν ίδιο
+    else if (swapped) score = 1;                                                     // ανάποδα
+    else if (dS <= 1 && f && cf && cf[0] === f[0]) score = 3 + dS;                   // ίδιο επώνυμο, όνομα από το ίδιο γράμμα
+    if (score != null) scored.push([score, name]);
+  }
+  return scored.sort((a, b) => a[0] - b[0]).slice(0, 4).map((x) => x[1]);
 }
 
 function ymd(d) {
@@ -399,13 +437,22 @@ function openVisit(existing) {
       <label class="field"><span class="lbl">Όνομα</span>
         <input class="input" data-field="first" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" value="${esc(V.newName.first)}"></label>
     </div>
+    <div id="v-similar"></div>
     <button class="item-x" style="color:var(--accent)" data-act="search-again">← Αναζήτηση στο πελατολόγιο</button>`;
+  const renderSimilar = () => {
+    const box = $('#v-similar');
+    if (!box || !V.newName) return;
+    const sim = similarClients(V.newName.surname, V.newName.first);
+    box.innerHTML = sim.length ? `<div class="warn" style="margin-bottom:8px"><b>Μήπως είναι κάποιος από αυτούς;</b> Πάτα το όνομα αν ναι.</div>
+      <ul class="suggest" style="margin:0 0 10px">${sim.map((n) => `<li><button data-act="pick-similar" data-v="${esc(n)}">${nameHtml(n)}</button></li>`).join('')}</ul>` : '';
+  };
   const searchHtml = () => `
       <input class="input" id="v-client" data-field="client" autocomplete="off" autocorrect="off" autocapitalize="words"
         spellcheck="false" enterkeyhint="done" placeholder="Επώνυμο ή όνομα" value="${esc(V.client)}">
       <ul class="suggest" id="v-suggest"></ul>`;
   const renderClientBox = () => {
     $('#v-client-box').innerHTML = V.newName ? newNameHtml() : searchHtml();
+    renderSimilar();
   };
 
   const body = `
@@ -439,7 +486,7 @@ function openVisit(existing) {
     onInput(el) {
       const f = el.dataset.field;
       if (f === 'client') { V.client = el.value; renderSuggest(); return; }
-      if (f === 'surname' || f === 'first') { V.newName[f] = el.value; return; }
+      if (f === 'surname' || f === 'first') { V.newName[f] = el.value; renderSimilar(); return; }
       const it = V.items[+el.dataset.i];
       if (!it) return;
       if (f === 'note') it.note = el.value;
@@ -459,6 +506,11 @@ function openVisit(existing) {
         V.newName = splitName(V.client);
         renderClientBox();
         $('#v-client-box [data-field=surname]').focus();
+      } else if (act === 'pick-similar') {
+        V.newName = null;
+        V.client = el.dataset.v;
+        renderClientBox();
+        toast(`Επιλέχθηκε: ${V.client}`);
       } else if (act === 'search-again') {
         V.newName = null;
         renderClientBox();
@@ -498,6 +550,9 @@ async function saveVisit(V, existing) {
   if (V.newName) {
     if (!cleanName(V.newName.surname) || !cleanName(V.newName.first)) return toast('Γράψε επώνυμο ΚΑΙ όνομα');
     client = joinName(V.newName.surname, V.newName.first);
+    const sim = similarClients(V.newName.surname, V.newName.first);
+    if (sim.length && !sim.some((n) => norm(n) === norm(client))
+      && !confirm(`Υπάρχει ήδη παρόμοιο όνομα:\n${sim.join('\n')}\n\nΣίγουρα είναι ΝΕΟΣ πελάτης;`)) return;
   } else {
     client = cleanName(V.client);
     if (!client) return toast('Γράψε όνομα πελάτη');
@@ -817,6 +872,8 @@ async function openClientEdit(name, backQuery) {
         const clash = S.clients.find((n) => norm(n) === norm(newName) && n !== name);
         if (!name) {
           if (clash) return toast(`Υπάρχει ήδη: ${clash}`);
+          const sim = similarClients(N.surname, N.first);
+          if (sim.length && !confirm(`Υπάρχει ήδη παρόμοιο όνομα:\n${sim.join('\n')}\n\nΣίγουρα είναι ΝΕΟΣ πελάτης;`)) return;
           await addClient(newName);
           toast(`Προστέθηκε: ${newName}`);
         } else if (newName !== name) {
