@@ -241,3 +241,13 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: v
 .kv.total span { color: var(--text); font-weight: 750; font-size: 20px; }
 .ok { color: var(--ok); }
 .bad { color: var(--danger); }
+
+/* ---------- v2 ---------- */
+.banner.alert { background: var(--warn-bg); color: var(--warn-ink); border: 1.5px solid currentColor; }
+.banner.alert .btn { margin-top: 12px; }
+.pos-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.pos-row .num { width: 26px; color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; }
+.pos-row .money { flex: 1; }
+.pos-row .item-x { font-size: 20px; width: 44px; }
+label.btn input[type=file] { display: none; }
+.sheet-open .toast { bottom: auto; top: calc(var(--safe-top) + 12px); }

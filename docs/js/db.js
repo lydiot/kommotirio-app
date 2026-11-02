@@ -3,7 +3,10 @@
 // λάθη στρογγυλοποίησης στα σύνολα και στο CSV.
 
 const DB_NAME = 'salon';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+
+export const newUid = () => (crypto.randomUUID ? crypto.randomUUID()
+  : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`);
 
 let dbPromise = null;
 
@@ -31,6 +34,24 @@ export function openDB() {
         // Έξοδα: { id, date, desc, amount, createdAt, updatedAt }
         const expenses = db.createObjectStore('expenses', { keyPath: 'id', autoIncrement: true });
         expenses.createIndex('date', 'date');
+      }
+      if (e.oldVersion < 2) {
+        // v2: κάθε επίσκεψη/έξοδο έχει μόνιμο uid, ίδιο σε όλες τις συσκευές,
+        // ώστε η εισαγωγή αρχείου να ενημερώνει αντί να διπλασιάζει.
+        const tx = req.transaction;
+        for (const name of ['visits', 'expenses']) {
+          const s = tx.objectStore(name);
+          s.openCursor().onsuccess = (ev) => {
+            const c = ev.target.result;
+            if (!c) return;
+            if (!c.value.uid) c.update({ ...c.value, uid: newUid(), updatedAt: c.value.updatedAt || Date.now() });
+            c.continue();
+          };
+        }
+        tx.objectStore('visits').createIndex('uid', 'uid', { unique: true });
+        tx.objectStore('expenses').createIndex('uid', 'uid', { unique: true });
+        // Διαγραφές: { uid, store, date, deletedAt } — για να σβήνονται και στην άλλη συσκευή.
+        db.createObjectStore('deleted', { keyPath: 'uid' });
       }
     };
     req.onsuccess = () => {

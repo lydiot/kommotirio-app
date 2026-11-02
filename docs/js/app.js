@@ -1,7 +1,8 @@
 import * as db from './db.js';
 import { seedIfNeeded, cleanName } from './seed.js';
+import * as backup from './backup.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '2.0.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -23,7 +24,7 @@ const toInput = (cents) => (cents == null ? '' : (cents / 100).toFixed(cents % 1
 const sum = (arr) => arr.reduce((a, b) => a + (b || 0), 0);
 
 // Αναζήτηση χωρίς τόνους / πεζά-κεφαλαία / τελικό σίγμα.
-const norm = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/ς/g, 'σ');
+const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/ς/g, 'σ');
 
 function ymd(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -61,10 +62,11 @@ const S = {
   staff: [],
   clients: [],
   persisted: null,
+  device: null, // τυχαίο id αυτής της συσκευής (για το «τι δεν έχει σταλεί»)
 };
 
 const blankDay = (date) => ({
-  date, posTotal: null, posCards: { visa: null, mastercard: null, other: null },
+  date, posTotal: null, posParts: [],
   retail: null, vat: null, locked: false, lockedAt: null, updatedAt: null,
 });
 
@@ -91,8 +93,16 @@ async function loadDay() {
   return true;
 }
 
+// Η διαγραφή αφήνει ίχνος, ώστε να σβηστεί και στην άλλη συσκευή κατά την εισαγωγή.
+async function deleteRecord(store, rec) {
+  await db.transaction([store, 'deleted'], (tx) => {
+    tx.objectStore(store).delete(rec.id);
+    if (rec.uid) tx.objectStore('deleted').put({ uid: rec.uid, store, date: rec.date, deletedAt: Date.now(), dev: S.device });
+  });
+}
+
 async function saveDay(patch) {
-  S.day = { ...S.day, ...patch, updatedAt: Date.now() };
+  S.day = { ...S.day, ...patch, updatedAt: Date.now(), dev: S.device };
   await db.put('days', S.day);
 }
 
@@ -192,18 +202,26 @@ function moneyField(label, key, value, disabled) {
       value="${toInput(value)}" placeholder="0" ${disabled ? 'disabled' : ''}><span class="cur">€</span></span></label>`;
 }
 
+function posRowHtml(value, i, disabled) {
+  return `<div class="pos-row">
+    <span class="num">${i + 1}.</span>
+    <span class="money"><input class="input" inputmode="decimal" data-pos value="${toInput(value)}" placeholder="0" ${disabled ? 'disabled' : ''}><span class="cur">€</span></span>
+    ${disabled ? '' : '<button class="item-x" data-act="pos-rm" aria-label="Αφαίρεση γραμμής">✕</button>'}
+  </div>`;
+}
+
 function renderTill() {
   const d = S.day, L = d.locked;
+  const parts = d.posParts || [];
+  const rows = (parts.length || L ? parts : [null]).map((p, i) => posRowHtml(p, i, L)).join('');
   $('#tab-till').innerHTML = `
     <h2>POS</h2>
     <div class="card">
       ${moneyField('Σύνολο POS', 'posTotal', d.posTotal, L)}
-      <div class="grid2">
-        ${moneyField('Visa', 'visa', d.posCards.visa, L)}
-        ${moneyField('Mastercard', 'mastercard', d.posCards.mastercard, L)}
-      </div>
-      <div style="margin-top:14px">${moneyField('Άλλες κάρτες', 'other', d.posCards.other, L)}</div>
-      <div id="pos-check"></div>
+      <span class="lbl" style="display:block;font-size:15px;font-weight:600;color:var(--muted);margin:0 4px 6px">Συναλλαγές με κάρτα (μία γραμμή ανά πελάτη)</span>
+      <div id="pos-parts">${rows || '<p class="note">Καμία γραμμή.</p>'}</div>
+      ${L ? '' : '<button class="btn" data-act="pos-add" style="margin-top:4px">＋ Γραμμή</button>'}
+      <div id="pos-check" style="margin-top:10px"></div>
     </div>
     <h2>Μεταπώληση & ΦΠΑ</h2>
     <div class="card">
@@ -212,18 +230,31 @@ function renderTill() {
     </div>
     <h2>Σύνοψη ημέρας</h2>
     <div class="card" id="till-summary"></div>
+    <h2>Αποστολή στη Λυδία / backup</h2>
+    <div class="card" id="send-status"></div>
     <div style="margin-top:16px" id="till-lock"></div>`;
   renderTillSummary();
+  renderSendStatus();
 }
 
 // Ξεχωριστά από τη φόρμα, ώστε η ανανέωση να μη χαλάει το πεδίο που γράφεις.
 function renderTillSummary() {
   const d = S.day, t = totals();
-  const cards = [d.posCards.visa, d.posCards.mastercard, d.posCards.other];
-  const cardsEntered = cards.some((c) => c != null);
-  const cardsSum = sum(cards);
-  $('#pos-check').innerHTML = cardsEntered && d.posTotal != null && cardsSum !== d.posTotal
-    ? `<div class="warn">Οι κάρτες κάνουν ${fmt(cardsSum)}, το σύνολο POS είναι ${fmt(d.posTotal)}.</div>` : '';
+  const parts = d.posParts || [];
+  const partsSum = sum(parts);
+  let check = '';
+  if (parts.length) {
+    check = `<div class="note" style="margin:0 4px 6px">${parts.length} ${parts.length === 1 ? 'γραμμή' : 'γραμμές'} · άθροισμα ${fmt(partsSum)}</div>`;
+    if (d.posTotal != null && partsSum !== d.posTotal) {
+      const diff = d.posTotal - partsSum;
+      check += `<div class="warn">Οι γραμμές κάνουν ${fmt(partsSum)}, το σύνολο POS είναι ${fmt(d.posTotal)} (${diff > 0 ? 'λείπουν' : 'περισσεύουν'} ${fmt(Math.abs(diff))}).</div>`;
+    } else if (d.posTotal == null) {
+      check += `<div class="warn">Γράψε και το σύνολο POS για έλεγχο.</div>`;
+    } else {
+      check += `<div class="note ok" style="margin:0 4px">✓ Συμφωνεί με το σύνολο POS.</div>`;
+    }
+  }
+  $('#pos-check').innerHTML = check;
 
   $('#till-summary').innerHTML = `
     <div class="kv"><span>Εργασίες (${S.visits.length})</span><span>${fmt(t.services)}</span></div>
@@ -238,7 +269,7 @@ function renderTillSummary() {
     ? `<div class="note" style="text-align:center;margin-bottom:10px">🔒 Η ημέρα έκλεισε στις ${timeStr(d.lockedAt)}.</div>
        <button class="btn danger" data-act="unlock">Ξεκλείδωμα ημέρας</button>`
     : `<button class="btn primary big" data-act="lock">Κλείσιμο ημέρας</button>
-       <p class="note" style="text-align:center">Μετά το κλείσιμο δεν αλλάζει τίποτα χωρίς ξεκλείδωμα.</p>`;
+       <p class="note" style="text-align:center">Μετά το κλείσιμο ακολουθεί αποστολή στη Λυδία (backup).</p>`;
 }
 
 function render() {
@@ -247,26 +278,29 @@ function render() {
   renderVisits();
   renderExpenses();
   renderTill();
+  renderBackupBanner();
 }
 
 // ---------------------------------------------------------------- φύλλο (sheet)
 let sheetHandlers = null;
 
-function openSheet({ title, body, foot, onAction, onInput }) {
+function openSheet({ title, body, foot, onAction, onInput, onChange, noClose = false }) {
   const panel = $('#sheet .sheet-panel');
   panel.innerHTML = `
-    <div class="sheet-head"><h3>${esc(title)}</h3><button data-act="close">Κλείσιμο</button></div>
+    <div class="sheet-head"><h3>${esc(title)}</h3>${noClose ? '' : '<button data-act="close">Κλείσιμο</button>'}</div>
     <div class="sheet-body">${body}</div>
     ${foot ? `<div class="sheet-foot">${foot}</div>` : ''}`;
-  sheetHandlers = { onAction, onInput };
+  sheetHandlers = { onAction, onInput, onChange, noClose };
   $('#sheet').hidden = false;
   document.body.style.overflow = 'hidden';
+  document.body.classList.add('sheet-open');
 }
 function closeSheet() {
   $('#sheet').hidden = true;
   $('#sheet .sheet-panel').innerHTML = '';
   sheetHandlers = null;
   document.body.style.overflow = '';
+  document.body.classList.remove('sheet-open');
 }
 
 // ---------------------------------------------------------------- επίσκεψη πελάτη
@@ -309,15 +343,15 @@ function openVisit(existing) {
     const q = norm(V.client.trim());
     const ul = $('#v-suggest');
     if (!q) { ul.innerHTML = ''; return; }
-    const starts = [], contains = [];
+    const exactHits = [], starts = [], contains = [];
     for (const name of S.clients) {
       const n = norm(name);
-      if (n === q) continue;
-      if (n.split(' ').some((w) => w.startsWith(q)) || n.startsWith(q)) starts.push(name);
+      if (n === q) exactHits.push(name);
+      else if (n.split(' ').some((w) => w.startsWith(q)) || n.startsWith(q)) starts.push(name);
       else if (n.includes(q)) contains.push(name);
     }
-    const hits = [...starts, ...contains].slice(0, 6);
-    const exact = S.clients.some((n) => norm(n) === q);
+    const hits = [...exactHits, ...starts, ...contains].slice(0, 6);
+    const exact = exactHits.length > 0;
     ul.innerHTML = hits.map((n) => `<li><button data-act="pick-client" data-v="${esc(n)}">${esc(n)}</button></li>`).join('') +
       (!exact ? `<li><button class="new" data-act="new-client">＋ Νέος πελάτης: «${esc(cleanName(V.client))}»</button></li>` : '');
   };
@@ -390,7 +424,7 @@ function openVisit(existing) {
         await saveVisit(V, existing);
       } else if (act === 'delete') {
         if (!confirm(`Διαγραφή της καταχώρησης «${existing.client}»;`)) return;
-        await db.del('visits', existing.id);
+        await deleteRecord('visits', existing);
         closeSheet();
         await refreshDay();
         toast('Διαγράφηκε');
@@ -414,8 +448,8 @@ async function saveVisit(V, existing) {
     ? { cat: OTHER, amount: it.amount, note: cleanName(it.note) }
     : { cat: it.cat, amount: it.amount }));
   const rec = {
-    ...(existing ? { id: existing.id, createdAt: existing.createdAt } : { createdAt: now }),
-    date: S.date, client, staff: V.staff, items, total: sum(items.map((i) => i.amount)), updatedAt: now,
+    ...(existing ? { id: existing.id, uid: existing.uid || db.newUid(), createdAt: existing.createdAt } : { uid: db.newUid(), createdAt: now }),
+    date: S.date, client, staff: V.staff, items, total: sum(items.map((i) => i.amount)), updatedAt: now, dev: S.device,
   };
   await db.put('visits', rec);
 
@@ -456,8 +490,8 @@ function openExpense(existing) {
         if (!Number.isFinite(E.amount) || E.amount <= 0) return toast('Γράψε σωστό ποσό');
         const now = Date.now();
         await db.put('expenses', {
-          ...(existing ? { id: existing.id, createdAt: existing.createdAt } : { createdAt: now }),
-          date: S.date, desc: cleanName(E.desc), amount: E.amount, updatedAt: now,
+          ...(existing ? { id: existing.id, uid: existing.uid || db.newUid(), createdAt: existing.createdAt } : { uid: db.newUid(), createdAt: now }),
+          date: S.date, desc: cleanName(E.desc), amount: E.amount, updatedAt: now, dev: S.device,
         });
         closeSheet();
         await refreshDay();
@@ -465,7 +499,7 @@ function openExpense(existing) {
         if (!S.persisted) ensurePersistent();
       } else if (act === 'delete') {
         if (!confirm('Διαγραφή εξόδου;')) return;
-        await db.del('expenses', existing.id);
+        await deleteRecord('expenses', existing);
         closeSheet();
         await refreshDay();
         toast('Διαγράφηκε');
@@ -473,6 +507,150 @@ function openExpense(existing) {
     },
   });
   if (!existing) setTimeout(() => $('#e-desc')?.focus(), 250);
+}
+
+// ---------------------------------------------------------------- αποστολή στη Λυδία / backup
+const phoneDigits = (s) => String(s || '').replace(/[^\d+]/g, '');
+const fmtDateShort = (date) => {
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('el-GR', { weekday: 'short', day: 'numeric', month: 'short' });
+};
+const fmtWhen = (ts) => (ts ? `${new Date(ts).toLocaleDateString('el-GR', { weekday: 'short', day: 'numeric', month: 'short' })}, ${timeStr(ts)}` : 'ποτέ');
+
+async function sendInfo() {
+  const lastSent = (await db.getMeta('lastSentAt')) || 0;
+  const pending = await backup.pendingDates(lastSent, S.device);
+  return { lastSent, pending };
+}
+
+async function renderSendStatus() {
+  const box = $('#send-status');
+  if (!box) return;
+  const { lastSent, pending } = await sendInfo();
+  if (!$('#send-status')) return;
+  box.innerHTML = `
+    <div class="kv"><span>Τελευταία αποστολή</span><span>${fmtWhen(lastSent)}</span></div>
+    <div class="kv"><span>Εκκρεμούν</span><span class="${pending.length ? 'bad' : 'ok'}">${pending.length ? pending.map(fmtDateShort).join(', ') : 'τίποτα ✓'}</span></div>
+    ${pending.length ? '<button class="btn" data-act="send" style="margin-top:10px">Στείλε στη Λυδία τώρα</button>' : ''}`;
+}
+
+// Κόκκινη προειδοποίηση όταν ανοίγει η εφαρμογή: υπάρχουν προηγούμενες ημέρες χωρίς αποστολή.
+async function renderBackupBanner() {
+  const el = $('#backup-banner');
+  const { lastSent, pending } = await sendInfo();
+  const old = pending.filter((d) => d < todayStr());
+  if (!old.length) { el.hidden = true; return; }
+  const daysAgo = lastSent ? Math.floor((Date.now() - lastSent) / 86400000) : null;
+  const since = daysAgo == null ? ' ποτέ' : daysAgo >= 1 ? ` εδώ και ${daysAgo} ${daysAgo === 1 ? 'μέρα' : 'μέρες'}` : '';
+  el.innerHTML = `<b>⚠️ Δεν έχει σταλεί backup${since}</b>
+    Εκκρεμούν: ${old.map(fmtDateShort).join(', ')}. Αν χαθεί ή χαλάσει το κινητό, αυτά χάνονται.
+    <button class="btn primary" data-act="send">Στείλε στη Λυδία τώρα</button>`;
+  el.hidden = false;
+}
+
+// Ετοιμάζει τα αρχεία ΠΡΙΝ το πάτημα: το iPhone επιτρέπει «Κοινοποίηση» μόνο
+// αμέσως μετά από άγγιγμα, οπότε το κουμπί πρέπει να έχει τα αρχεία έτοιμα.
+async function prepareSend() {
+  const { pending } = await sendInfo();
+  const builtAt = Date.now();
+  const dates = pending.length ? pending : [S.date];
+  const stampNow = backup.stamp();
+  const range = dates.length === 1 ? dates[0] : `${dates[0]}_${dates[dates.length - 1]}`;
+  const json = JSON.stringify(await backup.buildBackup());
+  const csv = await backup.buildCSV(new Set(dates));
+  return {
+    builtAt, pending, dates,
+    files: [
+      backup.makeFile(json, `kommotirio-backup-${stampNow}.json`, 'application/json'),
+      backup.makeFile(csv, `kommotirio-${range}.csv`, 'text/csv'),
+    ],
+  };
+}
+
+async function openSendSheet({ mandatory = false } = {}) {
+  let prep;
+  try { prep = await prepareSend(); } catch (err) { toast(`Σφάλμα εξαγωγής: ${err.message || err}`); return; }
+  const phone = (await db.getMeta('lydiaPhone')) || '';
+  const canShare = !!(navigator.canShare && navigator.canShare({ files: prep.files }));
+
+  const body = `
+    ${mandatory ? '<div class="warn" style="margin-bottom:12px"><b>Τελευταίο βήμα του κλεισίματος.</b> Η αποστολή είναι και το backup: χωρίς αυτήν, τα δεδομένα υπάρχουν μόνο σε αυτό το κινητό.</div>' : ''}
+    <div class="card">
+      <div class="kv"><span>Ημέρες</span><span>${prep.dates.map(fmtDateShort).join(', ')}</span></div>
+      <div class="kv"><span>Αρχεία</span><span>backup (όλα τα δεδομένα)<br>+ CSV για Excel</span></div>
+    </div>
+    <p class="note">${canShare
+      ? 'Θα ανοίξει το μενού κοινοποίησης: διάλεξε <b>Viber</b> και μετά τη <b>Λυδία</b> (ή Mail).'
+      : 'Σε αυτή τη συσκευή τα αρχεία θα κατέβουν στις Λήψεις. Στείλ’ τα μετά στη Λυδία.'}</p>
+    <label class="field" style="margin-top:14px"><span class="lbl">Κινητό Λυδίας (Viber) — αποθηκεύεται μόνο σε αυτή τη συσκευή</span>
+      <input class="input" data-field="phone" inputmode="tel" autocomplete="off" placeholder="+30 69…" value="${esc(phone)}"></label>
+    <div id="viber-wrap"></div>`;
+
+  const renderViber = (ph) => {
+    const n = phoneDigits(ph);
+    const w = $('#viber-wrap');
+    if (w) w.innerHTML = n.length >= 10
+      ? `<a class="btn" style="text-decoration:none" href="viber://chat?number=${encodeURIComponent(n)}">Άνοιγμα συνομιλίας Viber με Λυδία</a>
+         <p class="note">Για μήνυμα χωρίς αρχείο. Τα αρχεία στέλνονται με το μωβ κουμπί.</p>` : '';
+  };
+
+  const markSent = async () => {
+    await db.setMeta('lastSentAt', prep.builtAt);
+    renderSendStatus();
+    renderBackupBanner();
+  };
+
+  openSheet({
+    title: 'Στείλε στη Λυδία',
+    noClose: mandatory,
+    body,
+    foot: `<button class="btn primary big" data-act="share">${canShare ? 'Στείλε στη Λυδία τώρα' : 'Λήψη αρχείων'}</button>
+      ${mandatory ? '<button class="btn" data-act="later" style="margin-top:8px;min-height:44px;font-size:16px;background:transparent;color:var(--muted)">Αργότερα</button>' : ''}`,
+    onInput(el) {
+      if (el.dataset.field === 'phone') { db.setMeta('lydiaPhone', el.value.trim()); renderViber(el.value); }
+    },
+    async onAction(act) {
+      if (act === 'share') {
+        if (canShare) {
+          try {
+            await navigator.share({ files: prep.files, title: 'Κομμωτήριο — εξαγωγή' });
+            await markSent();
+            closeSheet();
+            toast('Στάλθηκε ✓');
+          } catch (err) {
+            if (err?.name === 'AbortError') toast('Δεν στάλθηκε — δοκίμασε ξανά');
+            else toast(`Δεν άνοιξε η κοινοποίηση: ${err?.message || err}`);
+          }
+        } else {
+          prep.files.forEach((f, i) => setTimeout(() => backup.download(f), i * 400));
+          await markSent();
+          closeSheet();
+          toast('Τα αρχεία κατέβηκαν ✓');
+        }
+      } else if (act === 'later') {
+        if (!confirm('Χωρίς αποστολή ΔΕΝ υπάρχει backup.\nΑν χαθεί το κινητό, χάνονται τα δεδομένα.\n\nΣίγουρα αργότερα;')) return;
+        closeSheet();
+        toast('Θα σου το θυμίσω στο επόμενο άνοιγμα');
+      }
+    },
+  });
+  renderViber(phone);
+}
+
+async function importFromFile(file) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const res = await backup.importText(text);
+    await loadStatic();
+    await refreshDay();
+    if (res.kind === 'clients') toast(`Πελατολόγιο: προστέθηκαν ${res.clientsAdded} ονόματα`);
+    else toast(`Εισαγωγή: ${res.added} νέα, ${res.updated} ενημερώσεις, ${res.deleted} διαγραφές, ${res.days} ημέρες ταμείου`);
+    return true;
+  } catch (err) {
+    toast(err.message || String(err));
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- ρυθμίσεις / πληροφορίες
@@ -484,6 +662,8 @@ async function openSettings() {
     if (est?.usage != null) usage = `${(est.usage / 1024).toFixed(0)} KB`;
   } catch { /* */ }
   const [visits, expenses, days] = await Promise.all([db.count('visits'), db.count('expenses'), db.count('days')]);
+  const sent = await sendInfo();
+  const phone = (await db.getMeta('lydiaPhone')) || '';
   const standalone = isStandalone();
   const persistTxt = S.persisted === true ? '<span class="ok">Ναι</span>'
     : S.persisted === false ? '<span class="bad">Όχι</span>' : 'Άγνωστο';
@@ -505,10 +685,45 @@ async function openSettings() {
         <div class="kv"><span>Ημέρες με ταμείο</span><span>${days}</span></div>
         <div class="kv"><span>Πελατολόγιο</span><span>${S.clients.length}</span></div>
       </div>
-      <h2>Αντίγραφο ασφαλείας</h2>
-      <div class="card"><p class="note" style="margin:0">Η εξαγωγή (CSV για Excel) έρχεται στην επόμενη έκδοση και θα είναι και το backup.</p></div>
+      <h2>Αποστολή στη Λυδία</h2>
+      <div class="card">
+        <div class="kv"><span>Τελευταία αποστολή</span><span>${fmtWhen(sent.lastSent)}</span></div>
+        <div class="kv"><span>Εκκρεμούν</span><span class="${sent.pending.length ? 'bad' : 'ok'}">${sent.pending.length ? sent.pending.map(fmtDateShort).join(', ') : 'τίποτα ✓'}</span></div>
+        <label class="field" style="margin:12px 0 0"><span class="lbl">Κινητό Λυδίας (Viber) — μόνο σε αυτή τη συσκευή</span>
+          <input class="input" data-field="phone" inputmode="tel" autocomplete="off" placeholder="+30 69…" value="${esc(phone)}"></label>
+      </div>
+      <div class="stack" style="margin-top:10px">
+        <button class="btn primary" data-act="send">Στείλε στη Λυδία τώρα</button>
+      </div>
+      <h2>Αρχεία</h2>
+      <div class="stack">
+        <button class="btn" data-act="dl-backup">Λήψη πλήρους backup</button>
+        <button class="btn" data-act="dl-csv">Λήψη CSV για Excel (όλες οι ημέρες)</button>
+        <label class="btn" style="cursor:pointer">Εισαγωγή αρχείου…
+          <input type="file" data-field="import" accept=".json,application/json" hidden></label>
+      </div>
+      <p class="note">Η εισαγωγή <b>συγχωνεύει</b>: δεν σβήνει ό,τι υπάρχει. Δέχεται αρχείο backup της εφαρμογής
+        (από άλλη συσκευή ή για επαναφορά) ή αρχείο πελατολογίου.</p>
       <p class="note" style="text-align:center;margin-top:18px">Έκδοση ${APP_VERSION}</p>`,
-    onAction() {},
+    onInput(el) {
+      if (el.dataset.field === 'phone') db.setMeta('lydiaPhone', el.value.trim());
+    },
+    async onChange(el) {
+      if (el.dataset.field === 'import' && el.files?.[0]) {
+        const ok = await importFromFile(el.files[0]);
+        el.value = '';
+        if (ok) closeSheet();
+      }
+    },
+    async onAction(act) {
+      if (act === 'send') { closeSheet(); openSendSheet(); }
+      if (act === 'dl-backup') {
+        backup.download(backup.makeFile(JSON.stringify(await backup.buildBackup()), `kommotirio-backup-${backup.stamp()}.json`, 'application/json'));
+      }
+      if (act === 'dl-csv') {
+        backup.download(backup.makeFile(await backup.buildCSV(), `kommotirio-ola-${backup.stamp()}.csv`, 'text/csv'));
+      }
+    },
   });
 }
 
@@ -573,19 +788,36 @@ async function goTo(date) {
   window.scrollTo(0, 0);
 }
 
-const DAY_FIELDS = { posTotal: 'posTotal', retail: 'retail', vat: 'vat' };
-const CARD_FIELDS = ['visa', 'mastercard', 'other'];
+const DAY_FIELDS = ['posTotal', 'retail', 'vat'];
 
 async function onTillChange(el) {
   if (S.day.locked) return;
+  if (el.hasAttribute('data-pos')) return onPosChange(el);
   const key = el.dataset.day;
   const v = parseMoney(el.value);
   if (Number.isNaN(v)) { toast('Μη έγκυρο ποσό'); el.focus(); return; }
-  if (CARD_FIELDS.includes(key)) await saveDay({ posCards: { ...S.day.posCards, [key]: v } });
-  else if (DAY_FIELDS[key]) await saveDay({ [key]: v });
+  if (DAY_FIELDS.includes(key)) await saveDay({ [key]: v });
   el.value = toInput(v);
   renderTillSummary();
+  renderSendStatus();
   if (!S.persisted) ensurePersistent();
+}
+
+// Οι γραμμές POS αποθηκεύονται όλες μαζί (οι κενές αγνοούνται).
+async function onPosChange(el) {
+  if (S.day.locked) return;
+  const inputs = [...document.querySelectorAll('#pos-parts input[data-pos]')];
+  const values = inputs.map((i) => parseMoney(i.value));
+  if (values.some(Number.isNaN)) { toast('Μη έγκυρο ποσό'); el?.focus(); return; }
+  inputs.forEach((i, k) => { if (values[k] != null) i.value = toInput(values[k]); });
+  await saveDay({ posParts: values.filter((v) => v != null) });
+  renderTillSummary();
+  renderSendStatus();
+  if (!S.persisted) ensurePersistent();
+}
+
+function renumberPos() {
+  document.querySelectorAll('#pos-parts .pos-row .num').forEach((n, i) => (n.textContent = `${i + 1}.`));
 }
 
 function bind() {
@@ -610,15 +842,28 @@ function bind() {
     if (act === 'new-visit') openVisit();
     if (act === 'edit-visit') openVisit(S.visits.find((v) => v.id === +el.dataset.id));
     if (act === 'new-expense') openExpense();
+    if (act === 'pos-add') {
+      const box = $('#pos-parts');
+      box.querySelector('p.note')?.remove();
+      box.insertAdjacentHTML('beforeend', posRowHtml(null, box.children.length, false));
+      box.lastElementChild.querySelector('input').focus();
+    }
+    if (act === 'pos-rm') {
+      el.closest('.pos-row').remove();
+      renumberPos();
+      await onPosChange();
+    }
+    if (act === 'send') openSendSheet();
     if (act === 'edit-expense') openExpense(S.expenses.find((x) => x.id === +el.dataset.id));
     if (act === 'lock') {
       if (!confirm(`Κλείσιμο της ημέρας ${dayTitle(S.date)};`)) return;
       // Πρώτα αποθηκεύουμε ό,τι γράφεται εκείνη τη στιγμή σε πεδίο.
       const active = document.activeElement;
-      if (active?.dataset?.day) await onTillChange(active);
+      if (active?.dataset?.day || active?.hasAttribute?.('data-pos')) await onTillChange(active);
       await saveDay({ locked: true, lockedAt: Date.now() });
       render();
-      toast('Η ημέρα έκλεισε 🔒');
+      // Υποχρεωτικό βήμα: αποστολή / backup αμέσως μετά το κλείσιμο.
+      openSendSheet({ mandatory: true });
     }
     if (act === 'unlock') {
       if (!confirm('Ξεκλείδωμα ημέρας; Θα μπορούν να γίνουν αλλαγές.')) return;
@@ -626,22 +871,28 @@ function bind() {
       render();
     }
   });
-  $('#main').addEventListener('change', (e) => { if (e.target.dataset.day) onTillChange(e.target); });
+  $('#main').addEventListener('change', (e) => {
+    if (e.target.dataset.day || e.target.hasAttribute('data-pos')) onTillChange(e.target);
+  });
   $('#main').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && e.target.dataset.day) e.target.blur();
+    if (e.key === 'Enter' && (e.target.dataset.day || e.target.hasAttribute('data-pos'))) e.target.blur();
   });
 
   const sheet = $('#sheet');
   sheet.addEventListener('click', (e) => {
-    if (e.target === sheet) return closeSheet();
+    if (e.target === sheet) return sheetHandlers?.noClose ? undefined : closeSheet();
     const el = e.target.closest('[data-act]');
     if (!el) return;
     if (el.dataset.act === 'close') return closeSheet();
     sheetHandlers?.onAction?.(el.dataset.act, el, e);
   });
   sheet.addEventListener('input', (e) => sheetHandlers?.onInput?.(e.target, e));
+  sheet.addEventListener('change', (e) => sheetHandlers?.onChange?.(e.target, e));
   sheet.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.tagName === 'INPUT') e.target.blur(); });
 
+  $('#backup-banner').addEventListener('click', (e) => {
+    if (e.target.closest('[data-act=send]')) openSendSheet();
+  });
   $('#install-banner').addEventListener('click', async (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'dismiss-install') {
@@ -663,6 +914,7 @@ function bind() {
   let lastToday = todayStr();
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
+    renderBackupBanner();
     const now = todayStr();
     if (now !== lastToday && S.date === lastToday && $('#sheet').hidden) goTo(now);
     lastToday = now;
@@ -675,6 +927,8 @@ async function start() {
     bind();
     registerSW();
     await seedIfNeeded();
+    S.device = await db.getMeta('deviceId');
+    if (!S.device) { S.device = db.newUid(); await db.setMeta('deviceId', S.device); }
     await loadStatic();
     await loadDay();
     render();
