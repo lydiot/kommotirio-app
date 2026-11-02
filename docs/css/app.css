@@ -321,3 +321,6 @@ label.btn input[type=file] { display: none; }
 .rtable .selc { background: var(--accent-soft); }
 .rtable.matrix { font-size: 14px; }
 .rcard .note { margin-top: 10px; }
+
+.err-box { background: color-mix(in srgb, var(--danger) 10%, var(--surface)); border: 1.5px solid var(--danger); border-radius: 12px; padding: 12px 14px; margin-top: 10px; }
+.err-detail { font-size: 13px; color: var(--muted); margin-top: 6px; word-break: break-word; font-family: ui-monospace, Menlo, monospace; }

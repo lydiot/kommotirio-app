@@ -3,7 +3,7 @@ import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
 import { renderResults } from './results.js';
 
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.5.1';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -684,76 +684,104 @@ async function prepareSend() {
   const range = dates.length === 1 ? dates[0] : `${dates[0]}_${dates[dates.length - 1]}`;
   const json = JSON.stringify(await backup.buildBackup());
   const csv = await backup.buildCSV(new Set(dates));
-  return {
-    builtAt, pending, dates,
-    files: [
-      backup.makeFile(json, `kommotirio-backup-${stampNow}.json`, 'application/json'),
-      backup.makeFile(csv, `kommotirio-${range}.csv`, 'text/csv'),
-    ],
-  };
+  // Το backup στέλνεται ως .txt (text/plain): το Chrome στο Android ΔΕΝ επιτρέπει
+  // κοινοποίηση .json. Η εισαγωγή αναγνωρίζει το περιεχόμενο, όχι την κατάληξη.
+  const backupFile = backup.makeFile(json, `kommotirio-backup-${stampNow}.txt`, 'text/plain');
+  const csvFile = backup.makeFile(csv, `kommotirio-${range}.csv`, 'text/csv');
+  return { builtAt, pending, dates, backupFile, csvFile };
 }
+
+const canShareFiles = (files) => {
+  try { return !!(navigator.canShare && navigator.canShare({ files })); } catch { return false; }
+};
 
 async function openSendSheet({ mandatory = false } = {}) {
   let prep;
   try { prep = await prepareSend(); } catch (err) { toast(`Σφάλμα εξαγωγής: ${err.message || err}`); return; }
   const phone = (await db.getMeta('lydiaPhone')) || '';
-  const canShare = !!(navigator.canShare && navigator.canShare({ files: prep.files }));
+  const both = [prep.backupFile, prep.csvFile];
+  const canBoth = canShareFiles(both), canBackup = canShareFiles([prep.backupFile]);
+  const canShare = canBoth || canBackup;
+  const ua = navigator.userAgent;
+  const device = (ua.match(/iPhone OS [\d_]+|iPad|Android [\d.]+/) || ['άλλη συσκευή'])[0].replace(/_/g, '.');
+  const browser = (ua.match(/CriOS\/\d+|FxiOS\/\d+|EdgA?\/\d+|SamsungBrowser\/\d+|Chrome\/\d+|Version\/[\d.]+ (Mobile\/\w+ )?Safari/) || [''])[0];
+  const diag = `share:${navigator.share ? 'ναι' : 'όχι'} · 2 αρχεία:${canBoth ? 'ναι' : 'όχι'} · backup:${canBackup ? 'ναι' : 'όχι'} · ${isStandalone() ? 'εφαρμογή' : 'browser'} · ${device} · ${browser}`;
 
   const body = `
     ${mandatory ? '<div class="warn" style="margin-bottom:12px"><b>Τελευταίο βήμα του κλεισίματος.</b> Η αποστολή είναι και το backup: χωρίς αυτήν, τα δεδομένα υπάρχουν μόνο σε αυτό το κινητό.</div>' : ''}
     <div class="card">
       <div class="kv"><span>Ημέρες</span><span>${prep.dates.map(fmtDateShort).join(', ')}</span></div>
-      <div class="kv"><span>Αρχεία</span><span>backup (όλα τα δεδομένα)<br>+ CSV για Excel</span></div>
+      <div class="kv"><span>Αρχεία</span><span>backup (όλα τα δεδομένα)${canBoth ? '<br>+ CSV για Excel' : ''}</span></div>
     </div>
     <p class="note">${canShare
-      ? 'Θα ανοίξει το μενού κοινοποίησης: διάλεξε <b>Viber</b> και μετά τη <b>Λυδία</b> (ή Mail).'
-      : 'Σε αυτή τη συσκευή τα αρχεία θα κατέβουν στις Λήψεις. Στείλ’ τα μετά στη Λυδία.'}</p>
+      ? 'Θα ανοίξει το μενού κοινοποίησης: διάλεξε <b>Viber</b> και μετά τη <b>Λυδία</b> (ή Gmail / Mail).'
+      : 'Αυτή η συσκευή δεν επιτρέπει κοινοποίηση αρχείων από την εφαρμογή. Τα αρχεία θα αποθηκευτούν στις Λήψεις — στείλ’ τα μετά από το Viber (συνημμένο → αρχείο).'}</p>
+    <div id="send-error"></div>
     <label class="field" style="margin-top:14px"><span class="lbl">Κινητό Λυδίας (Viber) — αποθηκεύεται μόνο σε αυτή τη συσκευή</span>
       <input class="input" data-field="phone" inputmode="tel" autocomplete="off" placeholder="+30 69…" value="${esc(phone)}"></label>
     <div id="viber-wrap"></div>`;
 
   const renderViber = (ph) => {
-    const n = phoneDigits(ph);
+    const n = phoneDigits(ph).replace(/^\+/, '');
     const w = $('#viber-wrap');
     if (w) w.innerHTML = n.length >= 10
-      ? `<a class="btn" style="text-decoration:none" href="viber://chat?number=${encodeURIComponent(n)}">Άνοιγμα συνομιλίας Viber με Λυδία</a>
-         <p class="note">Για μήνυμα χωρίς αρχείο. Τα αρχεία στέλνονται με το μωβ κουμπί.</p>` : '';
+      ? `<a class="btn" style="text-decoration:none" href="viber://chat?number=%2B${n}">Άνοιγμα συνομιλίας Viber με Λυδία</a>
+         <p class="note">Ανοίγει μόνο τη συνομιλία (χωρίς αρχείο). Τα αρχεία στέλνονται με το μωβ κουμπί.</p>` : '';
   };
 
-  const markSent = async () => {
+  const showError = (title, err, extraButtons = '') => {
+    $('#send-error').innerHTML = `<div class="err-box">
+      <b>${esc(title)}</b>
+      ${err ? `<div class="err-detail">${esc(err.name || '')}: ${esc(err.message || String(err))}</div>` : ''}
+      <div class="err-detail">${esc(diag)}</div>
+      <div class="stack" style="margin-top:10px">${extraButtons}
+        <button class="btn" data-act="download">Αποθήκευση αρχείων στη συσκευή</button></div>
+      <p class="note">Στείλε μου στιγμιότυπο αυτού του πλαισίου αν δεν βγει άκρη.</p></div>`;
+    $('#send-error').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  const markSent = async (how) => {
     await db.setMeta('lastSentAt', prep.builtAt);
+    await db.setMeta('lastSentHow', how);
     renderSendStatus();
     renderBackupBanner();
+  };
+
+  const share = async (files, label) => {
+    try {
+      await navigator.share({ files, title: 'Κομμωτήριο — backup' });
+      await markSent(label);
+      closeSheet();
+      toast('Στάλθηκε ✓');
+    } catch (err) {
+      if (err?.name === 'AbortError') showError('Η αποστολή ακυρώθηκε ή δεν ολοκληρώθηκε. Δοκίμασε ξανά.', null,
+        canBoth ? '<button class="btn primary" data-act="share-backup">Δοκίμασε μόνο το backup</button>' : '');
+      else showError('Δεν άνοιξε η κοινοποίηση.', err,
+        files.length > 1 && canBackup ? '<button class="btn primary" data-act="share-backup">Δοκίμασε μόνο το backup</button>' : '');
+    }
   };
 
   openSheet({
     title: 'Στείλε στη Λυδία',
     noClose: mandatory,
     body,
-    foot: `<button class="btn primary big" data-act="share">${canShare ? 'Στείλε στη Λυδία τώρα' : 'Λήψη αρχείων'}</button>
+    foot: `<button class="btn primary big" data-act="share">${canShare ? 'Στείλε στη Λυδία τώρα' : 'Αποθήκευση αρχείων'}</button>
       ${mandatory ? '<button class="btn" data-act="later" style="margin-top:8px;min-height:44px;font-size:16px;background:transparent;color:var(--muted)">Αργότερα</button>' : ''}`,
     onInput(el) {
       if (el.dataset.field === 'phone') { db.setMeta('lydiaPhone', el.value.trim()); renderViber(el.value); }
     },
     async onAction(act) {
+      // ΣΗΜΑΝΤΙΚΟ: το navigator.share καλείται χωρίς await πριν από αυτό,
+      // αλλιώς το κινητό το απορρίπτει ως «όχι από άγγιγμα».
       if (act === 'share') {
-        if (canShare) {
-          try {
-            await navigator.share({ files: prep.files, title: 'Κομμωτήριο — εξαγωγή' });
-            await markSent();
-            closeSheet();
-            toast('Στάλθηκε ✓');
-          } catch (err) {
-            if (err?.name === 'AbortError') toast('Δεν στάλθηκε — δοκίμασε ξανά');
-            else toast(`Δεν άνοιξε η κοινοποίηση: ${err?.message || err}`);
-          }
-        } else {
-          prep.files.forEach((f, i) => setTimeout(() => backup.download(f), i * 400));
-          await markSent();
-          closeSheet();
-          toast('Τα αρχεία κατέβηκαν ✓');
-        }
-      } else if (act === 'later') {
+        if (canBoth) return share(both, 'share-2');
+        if (canBackup) return share([prep.backupFile], 'share-backup');
+        return onDownload();
+      }
+      if (act === 'share-backup') return share([prep.backupFile], 'share-backup');
+      if (act === 'download') return onDownload();
+      if (act === 'confirm-sent') { await markSent('download'); closeSheet(); toast('Σημειώθηκε ως σταλμένο ✓'); return; }
+      if (act === 'later') {
         if (!confirm('Χωρίς αποστολή ΔΕΝ υπάρχει backup.\nΑν χαθεί το κινητό, χάνονται τα δεδομένα.\n\nΣίγουρα αργότερα;')) return;
         closeSheet();
         toast('Θα σου το θυμίσω στο επόμενο άνοιγμα');
@@ -761,6 +789,18 @@ async function openSendSheet({ mandatory = false } = {}) {
     },
   });
   renderViber(phone);
+
+  async function onDownload() {
+    try {
+      backup.download(prep.backupFile);
+      setTimeout(() => backup.download(prep.csvFile), 500);
+      $('#send-error').innerHTML = `<div class="warn"><b>Τα αρχεία αποθηκεύτηκαν στις Λήψεις.</b>
+        Άνοιξε το Viber → συνομιλία με Λυδία → 📎 → Αρχείο, και διάλεξε το «${esc(prep.backupFile.name)}».
+        <button class="btn primary" data-act="confirm-sent" style="margin-top:10px">Το έστειλα ✓</button></div>`;
+    } catch (err) {
+      showError('Δεν αποθηκεύτηκαν τα αρχεία.', err);
+    }
+  }
 }
 
 async function importFromFile(file) {
@@ -1038,7 +1078,7 @@ async function openSettings() {
         <button class="btn" data-act="dl-backup">Λήψη πλήρους backup</button>
         <button class="btn" data-act="dl-csv">Λήψη CSV για Excel (όλες οι ημέρες)</button>
         <label class="btn" style="cursor:pointer">Εισαγωγή αρχείου…
-          <input type="file" data-field="import" accept=".json,application/json" hidden></label>
+          <input type="file" data-field="import" accept=".json,.txt,application/json,text/plain" hidden></label>
       </div>
       <p class="note">Η εισαγωγή <b>συγχωνεύει</b>: δεν σβήνει ό,τι υπάρχει. Δέχεται αρχείο backup της εφαρμογής
         (από άλλη συσκευή ή για επαναφορά) ή αρχείο πελατολογίου.</p>
