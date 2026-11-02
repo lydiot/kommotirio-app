@@ -2,8 +2,9 @@ import * as db from './db.js';
 import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
 import { renderResults, overdueClients } from './results.js';
+import * as lock from './lock.js';
 
-const APP_VERSION = '2.8.1';
+const APP_VERSION = '2.9.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -760,8 +761,8 @@ async function prepareSend() {
   const csv = await backup.buildCSV(new Set(dates));
   // Το backup στέλνεται ως .txt (text/plain): το Chrome στο Android ΔΕΝ επιτρέπει
   // κοινοποίηση .json. Η εισαγωγή αναγνωρίζει το περιεχόμενο, όχι την κατάληξη.
-  const backupFile = backup.makeFile(json, `kommotirio-backup-${stampNow}.txt`, 'text/plain');
-  const csvFile = backup.makeFile(csv, `kommotirio-${range}.csv`, 'text/csv');
+  const backupFile = backup.makeFile(json, `syntages-${stampNow}.txt`, 'text/plain');
+  const csvFile = backup.makeFile(csv, `syntages-${range}.csv`, 'text/csv');
   return { builtAt, pending, dates, backupFile, csvFile };
 }
 
@@ -823,7 +824,7 @@ async function openSendSheet({ mandatory = false } = {}) {
 
   const share = async (files, label) => {
     try {
-      await navigator.share({ files, title: 'Κομμωτήριο — backup' });
+      await navigator.share({ files, title: 'Συνταγές' });
       await markSent(label);
       closeSheet();
       toast('Στάλθηκε ✓');
@@ -1214,6 +1215,7 @@ async function openSettings() {
   const [visits, expenses, days] = await Promise.all([db.count('visits'), db.count('expenses'), db.count('days')]);
   const sent = await sendInfo();
   const phone = (await db.getMeta('lydiaPhone')) || '';
+  const hasPin = await lock.hasPin();
   const standalone = isStandalone();
   const persistTxt = S.persisted === true ? '<span class="ok">Ναι</span>'
     : S.persisted === false ? '<span class="bad">Όχι</span>' : 'Άγνωστο';
@@ -1235,6 +1237,12 @@ async function openSettings() {
         <div class="kv"><span>Ημέρες με ταμείο</span><span>${days}</span></div>
         <div class="kv"><span>Πελατολόγιο</span><span>${S.clients.length}</span></div>
       </div>
+      <h2>Κλείδωμα</h2>
+      <div class="stack">${hasPin
+        ? '<button class="btn" data-act="pin-change">Αλλαγή κωδικού</button><button class="btn" data-act="pin-remove">Αφαίρεση κωδικού</button>'
+        : '<button class="btn primary" data-act="pin-set">🔒 Ορισμός κωδικού (PIN)</button>'}</div>
+      <p class="note">Ο κωδικός ζητείται στο άνοιγμα και όταν η εφαρμογή λείψει πάνω από 2 λεπτά. Ισχύει μόνο σε αυτή τη συσκευή
+        και δεν ανακτάται — αν ξεχαστεί, η επαναφορά γίνεται από το τελευταίο αρχείο που στάλθηκε.</p>
       <h2>Διορθώσεις</h2>
       <div class="stack">
         <button class="btn" data-act="mgmt-clients">Πελατολόγιο (${S.clients.length})</button>
@@ -1277,11 +1285,20 @@ async function openSettings() {
       if (act === 'mgmt-clients') openClients();
       if (act === 'mgmt-catalog') openCatalog();
       if (act === 'mgmt-fixed') openFixed();
+      if (act === 'pin-set') { closeSheet(); lock.showPad('set', { allowCancel: true, onDone: (ok) => ok && toast('Ο κωδικός ορίστηκε 🔒') }); }
+      if (act === 'pin-change') {
+        closeSheet();
+        lock.showPad('verify', { allowCancel: true, onDone: (ok) => ok && lock.showPad('set', { allowCancel: true, onDone: (ok2) => ok2 && toast('Ο κωδικός άλλαξε 🔒') }) });
+      }
+      if (act === 'pin-remove') {
+        closeSheet();
+        lock.showPad('verify', { allowCancel: true, onDone: async (ok) => { if (ok) { await lock.removePin(); toast('Ο κωδικός αφαιρέθηκε'); } } });
+      }
       if (act === 'dl-backup') {
-        backup.download(backup.makeFile(JSON.stringify(await backup.buildBackup()), `kommotirio-backup-${backup.stamp()}.json`, 'application/json'));
+        backup.download(backup.makeFile(JSON.stringify(await backup.buildBackup()), `syntages-${backup.stamp()}.json`, 'application/json'));
       }
       if (act === 'dl-csv') {
-        backup.download(backup.makeFile(await backup.buildCSV(), `kommotirio-ola-${backup.stamp()}.csv`, 'text/csv'));
+        backup.download(backup.makeFile(await backup.buildCSV(), `syntages-ola-${backup.stamp()}.csv`, 'text/csv'));
       }
     },
   });
@@ -1328,9 +1345,11 @@ function registerSW() {
       });
     });
   }).catch(() => { /* χωρίς SW η εφαρμογή δουλεύει, απλώς όχι offline */ });
+  // Επαναφόρτωση ΜΟΝΟ σε ενημέρωση (όχι στην πρώτη εγκατάσταση, όπου δεν υπήρχε controller).
+  const hadController = !!navigator.serviceWorker.controller;
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloaded) return;
+    if (reloaded || !hadController) return;
     reloaded = true;
     location.reload();
   });
@@ -1495,7 +1514,22 @@ async function start() {
     render();
     renderInstallBanner();
     ensurePersistent();
+    const html = document.documentElement;
+    if (await lock.hasPin()) {
+      lock.showPad('unlock', { onDone: () => html.classList.remove('booting') });
+    } else {
+      html.classList.remove('booting');
+      if (!(await db.getMeta('pinAsked'))) {
+        lock.showPad('set', {
+          title: 'Όρισε κωδικό 4 ψηφίων για να ανοίγει η εφαρμογή',
+          onLater: () => { db.setMeta('pinAsked', 1); toast('Μπορείς να τον ορίσεις από ⚙︎ → Κλείδωμα'); },
+          onDone: (ok) => { db.setMeta('pinAsked', 1); if (ok) toast('Ο κωδικός ορίστηκε 🔒'); },
+        });
+      }
+    }
+    lock.guardBackground(() => closeSheet());
   } catch (err) {
+    document.documentElement.classList.remove('booting');
     console.error(err);
     $('#main').innerHTML = `<div class="card"><b>Κάτι πήγε στραβά στο άνοιγμα.</b>
       <p class="note">${esc(err.message || err)}</p>

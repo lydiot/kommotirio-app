@@ -409,3 +409,29 @@ a.tel { font-size: 15px; font-weight: 600; color: var(--accent); text-decoration
   tr { break-inside: avoid; }
   @page { margin: 12mm; }
 }
+
+/* ---------- Κλείδωμα / κάλυμμα ---------- */
+html.booting body > *:not(#lock):not(.cover) { visibility: hidden; }
+.cover { display: none; position: fixed; inset: 0; z-index: 90; background: #c8553d url(../icons/icon-192.png) center / 120px no-repeat; }
+html.booting .cover, html.covered .cover { display: block; }
+.lock { position: fixed; inset: 0; z-index: 100; background: #c8553d; color: #fff; display: flex; align-items: center; justify-content: center;
+  padding: calc(var(--safe-top) + 20px) 20px calc(var(--safe-bottom) + 20px); overflow-y: auto; }
+.lock-inner { width: 100%; max-width: 330px; text-align: center; }
+.lock-logo { width: 72px; height: 72px; border-radius: 18px; box-shadow: 0 4px 16px rgba(0,0,0,.18); }
+.lock-name { font-size: 22px; font-weight: 700; margin: 8px 0 18px; }
+.lock-title { font-size: 17px; font-weight: 600; min-height: 24px; }
+.lock-dots { display: flex; justify-content: center; gap: 18px; margin: 18px 0 8px; }
+.lock-dots i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid #fff; }
+.lock-dots i.on { background: #fff; }
+.lock-dots.shake { animation: shake .35s; }
+@keyframes shake { 20%, 60% { transform: translateX(-10px); } 40%, 80% { transform: translateX(10px); } }
+.lock-msg { min-height: 22px; font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.lock-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; justify-items: center; }
+.lock-pad button { width: 76px; height: 76px; border-radius: 50%; border: 0; background: rgba(255,255,255,.18); color: #fff; font-size: 30px; font-weight: 500; }
+.lock-pad button:active { background: rgba(255,255,255,.35); }
+.lock-pad .lk-text { background: transparent; font-size: 17px; }
+.lock-forgot { text-align: left; }
+.lock-forgot p { font-size: 16px; line-height: 1.45; }
+.lock-forgot .btn { color: #fff; border-color: #fff; }
+.lock-forgot .btn:not(.danger) { background: rgba(255,255,255,.18); }
+@media print { .cover, .lock { display: none !important; } }

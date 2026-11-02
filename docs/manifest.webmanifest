@@ -1,13 +1,13 @@
 {
-  "name": "Κομμωτήριο — Καταγραφή ημέρας",
-  "short_name": "Κομμωτήριο",
+  "name": "Συνταγές",
+  "short_name": "Συνταγές",
   "lang": "el",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#faf7f8",
-  "theme_color": "#7a3b5e",
+  "background_color": "#c8553d",
+  "theme_color": "#c8553d",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },

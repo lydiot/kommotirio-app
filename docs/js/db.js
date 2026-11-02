@@ -133,3 +133,12 @@ export async function setMeta(key, value) {
 export async function count(storeName) {
   return wrap((await store(storeName)).count());
 }
+
+// Πλήρες σβήσιμο της βάσης ΑΥΤΗΣ της συσκευής (μόνο για «ξέχασα τον κωδικό»).
+export async function wipe() {
+  if (dbPromise) { try { (await dbPromise).close(); } catch { /* */ } dbPromise = null; }
+  await new Promise((resolve, reject) => {
+    const req = indexedDB.deleteDatabase(DB_NAME);
+    req.onsuccess = req.onerror = req.onblocked = () => resolve();
+  });
+}

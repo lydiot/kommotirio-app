@@ -735,7 +735,7 @@ export async function renderResults(el) {
       <h2 class="rtitle">${esc(per.label)}${R.staff ? ` · ${esc(R.staff)}` : ''}</h2>
       <span class="rsub">${fDate(per.from)} – ${fDate(per.to)}${cmp ? ` · σύγκριση με ${esc(cmp.label)}` : ''}</span>
       <button class="btn no-print print-btn" data-act="print-menu">🖨 Εκτύπωση / ⬇ PDF</button>
-      <span class="print-only print-date">Κομμωτήριο · εκτύπωση ${new Date().toLocaleDateString('el-GR', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
+      <span class="print-only print-date">Εκτύπωση ${new Date().toLocaleDateString('el-GR', { day: 'numeric', month: 'long', year: 'numeric' })}</span>
     </div>
     <div class="print-menu no-print" hidden>
       <b>Τι να τυπωθεί;</b>
@@ -788,12 +788,12 @@ function bind(el, ctx) {
     const m = el.querySelector('.print-menu'); m.hidden = !m.hidden;
   });
   el.querySelectorAll('[data-act=print]').forEach((btn) => btn.addEventListener('click', () => {
-    const prev = { section: R.section, clientOpen: R.clientOpen }, title = 'Κομμωτήριο';
+    const prev = { section: R.section, clientOpen: R.clientOpen }, title = 'Συνταγές';
     if (btn.dataset.v === 'all') { R.section = 'all'; R.clientOpen = null; }
     R.printing = true;
     // Το όνομα του αρχείου PDF βγαίνει από τον τίτλο της σελίδας.
     const sec = R.clientOpen || SECTIONS.find(([k]) => k === R.section)[1];
-    document.title = `Κομμωτήριο - ${ctx.per.label}${R.staff ? ' - ' + R.staff : ''} - ${sec}`;
+    document.title = `Συνταγές - ${ctx.per.label}${R.staff ? ' - ' + R.staff : ''}${R.section === 'all' ? '' : ' - ' + sec}`;
     rerender().then(() => {
       let done = false;
       const restore = () => {
