@@ -128,38 +128,60 @@ export async function importText(text) {
     const cur = localDays.get(d.date);
     if (!cur || (d.updatedAt || 0) > (cur.updatedAt || 0)) { writes.push(['days', 'put', d]); res.days++; }
   }
-  const catNames = new Set(local.categories.map((c) => c.name));
-  for (const c of inc.categories || []) if (!catNames.has(c.name)) writes.push(['categories', 'put', c]);
+  // Τιμοκατάλογος: κρατιέται η νεότερη εκδοχή· διαγραφές με ίχνος «cat:όνομα».
+  const localCats = new Map(local.categories.map((c) => [c.name, c]));
+  for (const c of inc.categories || []) {
+    const t = tombs.get(`cat:${c.name}`);
+    if (t && t.deletedAt >= (c.updatedAt || 0)) continue;
+    const cur = localCats.get(c.name);
+    if (!cur || (c.updatedAt || 0) > (cur.updatedAt || 0)) writes.push(['categories', 'put', c]);
+  }
+  // Πελατολόγιο: διαγραφές/μετονομασίες με ίχνος «client:όνομα».
+  for (const t of tombs.values()) {
+    if (t.store === 'categories') {
+      const cur = localCats.get(t.uid.slice(4));
+      if (cur && (cur.updatedAt || 0) <= t.deletedAt) writes.push(['categories', 'delete', cur.name]);
+    }
+    if (t.store === 'clients') {
+      const cur = local.clients.find((c) => c.name === t.uid.slice(7));
+      if (cur && (cur.createdAt || 0) <= t.deletedAt) { writes.push(['clients', 'delete', cur.id]); res.clientsRemoved = (res.clientsRemoved || 0) + 1; }
+    }
+  }
   const staffNames = new Set(local.staff.map((s) => s.name));
   for (const s of inc.staff || []) if (!staffNames.has(s.name)) writes.push(['staff', 'put', s]);
   for (const t of tombs.values()) writes.push(['deleted', 'put', t]);
 
-  await db.transaction(['visits', 'expenses', 'days', 'categories', 'staff', 'deleted'], (tx) => {
+  await db.transaction(['visits', 'expenses', 'days', 'categories', 'staff', 'deleted', 'clients'], (tx) => {
     for (const [store, op, v] of writes) {
       if (op === 'put') tx.objectStore(store).put(v);
       else tx.objectStore(store).delete(v);
     }
   });
 
-  res.clientsAdded = await addClients((inc.clients || []).map((c) => c.name), 'import');
+  res.clientsAdded = await addClients(inc.clients || [], 'import');
   if (obj.settings?.lydiaPhone && !(await db.getMeta('lydiaPhone'))) await db.setMeta('lydiaPhone', obj.settings.lydiaPhone);
   return res;
 }
 
-async function addClients(names, source) {
+// Προσθέτει ονόματα που λείπουν. Δεν ξαναφέρνει ονόματα που σβήστηκαν εδώ
+// μετά τη δημιουργία τους (ίχνος «client:όνομα»). Αρχεία πελατολογίου = createdAt 0.
+async function addClients(list, source) {
   const have = new Set((await db.getAll('clients')).map((c) => cleanName(c.name)));
-  const now = Date.now();
+  const tombs = new Map((await db.getAll('deleted')).filter((t) => t.store === 'clients').map((t) => [t.uid.slice(7), t]));
   const add = [];
-  for (const raw of names) {
-    const name = cleanName(raw);
+  for (const item of list) {
+    const name = cleanName(typeof item === 'string' ? item : item.name);
+    const createdAt = typeof item === 'string' ? 0 : (item.createdAt || 0);
     if (!name || have.has(name)) continue;
+    const t = tombs.get(name);
+    if (t && t.deletedAt >= createdAt) continue;
     have.add(name);
-    add.push(name);
+    add.push({ name, source, createdAt });
   }
   if (add.length) {
     await db.transaction(['clients'], (tx) => {
       const s = tx.objectStore('clients');
-      add.forEach((name) => s.add({ name, source, createdAt: now }));
+      add.forEach((c) => s.add(c));
     });
   }
   return add.length;

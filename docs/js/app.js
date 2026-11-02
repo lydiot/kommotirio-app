@@ -2,7 +2,7 @@ import * as db from './db.js';
 import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
 
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.1.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -25,6 +25,42 @@ const sum = (arr) => arr.reduce((a, b) => a + (b || 0), 0);
 
 // Αναζήτηση χωρίς τόνους / πεζά-κεφαλαία / τελικό σίγμα.
 const norm = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/ς/g, 'σ');
+
+// Ονόματα: πάντα «Επώνυμο Όνομα». Πρώτη λέξη = επώνυμο.
+function splitName(name) {
+  const parts = cleanName(name).split(' ');
+  return { surname: parts[0] || '', first: parts.slice(1).join(' ') };
+}
+const joinName = (surname, first) => cleanName(`${cleanName(surname)} ${cleanName(first)}`);
+
+// Επώνυμο έντονο, και υπογράμμιση στο κομμάτι που ταιριάζει με την αναζήτηση q (ήδη norm).
+function nameHtml(name, q = '') {
+  const chars = [...name];
+  const n = chars.map((c) => norm(c));
+  const joined = n.join('');
+  let from = -1;
+  if (q) from = joined.startsWith(q) ? 0 : (joined.indexOf(' ' + q) >= 0 ? joined.indexOf(' ' + q) + 1 : joined.indexOf(q));
+  // θέση normalized → θέση χαρακτήρα
+  const startOf = []; let pos = 0;
+  n.forEach((x, i) => { startOf[i] = pos; pos += x.length; });
+  const space = name.indexOf(' ');
+  const surnameEnd = space < 0 ? chars.length : [...name.slice(0, space)].length;
+  let out = '', cur = null, buf = '';
+  const flush = () => {
+    if (!buf) return;
+    let h = esc(buf);
+    if (cur.m) h = `<u>${h}</u>`;
+    if (cur.b) h = `<b>${h}</b>`;
+    out += h; buf = '';
+  };
+  chars.forEach((c, i) => {
+    const f = { b: i < surnameEnd, m: from >= 0 && startOf[i] >= from && startOf[i] < from + q.length };
+    if (!cur || f.b !== cur.b || f.m !== cur.m) { flush(); cur = f; }
+    buf += c;
+  });
+  flush();
+  return out;
+}
 
 function ymd(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
@@ -306,7 +342,7 @@ function closeSheet() {
 // ---------------------------------------------------------------- επίσκεψη πελάτη
 function openVisit(existing) {
   if (lockedGuard()) return;
-  const V = existing ? structuredClone(existing) : { client: '', staff: '', items: [] };
+  const V = existing ? { ...structuredClone(existing), newName: null } : { client: '', staff: '', items: [], newName: null };
   const catPrices = Object.fromEntries(S.categories.map((c) => [c.name, c.prices]));
 
   const total = () => sum(V.items.map((it) => (Number.isFinite(it.amount) ? it.amount : 0)));
@@ -352,16 +388,30 @@ function openVisit(existing) {
     }
     const hits = [...exactHits, ...starts, ...contains].slice(0, 6);
     const exact = exactHits.length > 0;
-    ul.innerHTML = hits.map((n) => `<li><button data-act="pick-client" data-v="${esc(n)}">${esc(n)}</button></li>`).join('') +
-      (!exact ? `<li><button class="new" data-act="new-client">＋ Νέος πελάτης: «${esc(cleanName(V.client))}»</button></li>` : '');
+    ul.innerHTML = hits.map((n) => `<li><button data-act="pick-client" data-v="${esc(n)}">${nameHtml(n, q)}</button></li>`).join('') +
+      (!exact ? `<li><button class="new" data-act="new-client">＋ Νέος πελάτης (Επώνυμο + Όνομα)</button></li>` : '');
+  };
+
+  const newNameHtml = () => `
+    <div class="grid2">
+      <label class="field"><span class="lbl">Επώνυμο</span>
+        <input class="input" data-field="surname" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" value="${esc(V.newName.surname)}"></label>
+      <label class="field"><span class="lbl">Όνομα</span>
+        <input class="input" data-field="first" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" value="${esc(V.newName.first)}"></label>
+    </div>
+    <button class="item-x" style="color:var(--accent)" data-act="search-again">← Αναζήτηση στο πελατολόγιο</button>`;
+  const searchHtml = () => `
+      <input class="input" id="v-client" data-field="client" autocomplete="off" autocorrect="off" autocapitalize="words"
+        spellcheck="false" enterkeyhint="done" placeholder="Επώνυμο ή όνομα" value="${esc(V.client)}">
+      <ul class="suggest" id="v-suggest"></ul>`;
+  const renderClientBox = () => {
+    $('#v-client-box').innerHTML = V.newName ? newNameHtml() : searchHtml();
   };
 
   const body = `
     <div class="field">
       <span class="lbl">Πελάτης</span>
-      <input class="input" id="v-client" data-field="client" autocomplete="off" autocorrect="off" autocapitalize="words"
-        spellcheck="false" enterkeyhint="done" placeholder="Όνομα πελάτη" value="${esc(V.client)}">
-      <ul class="suggest" id="v-suggest"></ul>
+      <div id="v-client-box">${searchHtml()}</div>
     </div>
     <div class="field">
       <span class="lbl">Υπάλληλος</span>
@@ -389,6 +439,7 @@ function openVisit(existing) {
     onInput(el) {
       const f = el.dataset.field;
       if (f === 'client') { V.client = el.value; renderSuggest(); return; }
+      if (f === 'surname' || f === 'first') { V.newName[f] = el.value; return; }
       const it = V.items[+el.dataset.i];
       if (!it) return;
       if (f === 'note') it.note = el.value;
@@ -399,12 +450,19 @@ function openVisit(existing) {
       }
     },
     async onAction(act, el) {
-      if (act === 'pick-client' || act === 'new-client') {
-        if (act === 'pick-client') V.client = el.dataset.v;
-        else V.client = cleanName(V.client);
+      if (act === 'pick-client') {
+        V.client = el.dataset.v;
         $('#v-client').value = V.client;
         $('#v-suggest').innerHTML = '';
         $('#v-client').blur();
+      } else if (act === 'new-client') {
+        V.newName = splitName(V.client);
+        renderClientBox();
+        $('#v-client-box [data-field=surname]').focus();
+      } else if (act === 'search-again') {
+        V.newName = null;
+        renderClientBox();
+        renderSuggest();
       } else if (act === 'staff') {
         V.staff = el.dataset.v;
         $('#v-staff').innerHTML = staffBtns();
@@ -436,8 +494,18 @@ function openVisit(existing) {
 }
 
 async function saveVisit(V, existing) {
-  const client = cleanName(V.client);
-  if (!client) return toast('Γράψε όνομα πελάτη');
+  let client;
+  if (V.newName) {
+    if (!cleanName(V.newName.surname) || !cleanName(V.newName.first)) return toast('Γράψε επώνυμο ΚΑΙ όνομα');
+    client = joinName(V.newName.surname, V.newName.first);
+  } else {
+    client = cleanName(V.client);
+    if (!client) return toast('Γράψε όνομα πελάτη');
+    const known = S.clients.some((n) => norm(n) === norm(client)) || (existing && existing.client === client);
+    if (!known) return toast('Διάλεξε από τη λίστα ή πάτα «Νέος πελάτης»');
+  }
+  // Ίδια γραφή με το πελατολόγιο (π.χ. αν γράφτηκε χωρίς τόνους).
+  client = S.clients.find((n) => norm(n) === norm(client)) || client;
   if (!V.staff) return toast('Διάλεξε υπάλληλο');
   if (!V.items.length) return toast('Πρόσθεσε τουλάχιστον μία εργασία');
   const bad = V.items.find((it) => !Number.isFinite(it.amount));
@@ -653,6 +721,210 @@ async function importFromFile(file) {
   }
 }
 
+// ---------------------------------------------------------------- διαχείριση: πελατολόγιο
+// Τα ίχνη διαγραφής (store «deleted») περνούν και στην άλλη συσκευή με την εισαγωγή.
+const tomb = (store, key) => ({ uid: `${store === 'clients' ? 'client' : 'cat'}:${key}`, store, date: null, deletedAt: Date.now(), dev: S.device });
+
+async function findClient(name) {
+  return (await db.getByIndex('clients', 'name', name))[0];
+}
+
+// Μετονομασία: αλλάζει και σε όλες τις παλιές επισκέψεις. Αν το νέο όνομα
+// υπάρχει ήδη, οι δύο πελάτες ενώνονται σε έναν.
+async function renameClient(oldName, newName) {
+  const now = Date.now();
+  const rec = await findClient(oldName);
+  const target = await findClient(newName);
+  const visits = (await db.getAll('visits')).filter((v) => v.client === oldName);
+  await db.transaction(['clients', 'visits', 'deleted'], (tx) => {
+    const cs = tx.objectStore('clients');
+    if (target && rec && target.id !== rec.id) cs.delete(rec.id);
+    else if (rec) cs.put({ ...rec, name: newName, createdAt: now });
+    else if (!target) cs.add({ name: newName, source: 'app', createdAt: now });
+    tx.objectStore('deleted').put(tomb('clients', oldName));
+    tx.objectStore('deleted').delete(`client:${newName}`);
+    const vs = tx.objectStore('visits');
+    visits.forEach((v) => vs.put({ ...v, client: newName, updatedAt: now, dev: S.device }));
+  });
+  return visits.length;
+}
+
+async function deleteClient(name) {
+  const rec = await findClient(name);
+  await db.transaction(['clients', 'deleted'], (tx) => {
+    if (rec) tx.objectStore('clients').delete(rec.id);
+    tx.objectStore('deleted').put(tomb('clients', name));
+  });
+}
+
+async function addClient(name) {
+  await db.transaction(['clients', 'deleted'], (tx) => {
+    tx.objectStore('clients').add({ name, source: 'app', createdAt: Date.now() });
+    tx.objectStore('deleted').delete(`client:${name}`);
+  });
+}
+
+function openClients(query = '') {
+  let q = query;
+  const renderList = () => {
+    const nq = norm(q.trim());
+    const all = nq ? S.clients.filter((n) => norm(n).includes(nq)) : S.clients;
+    const shown = all.slice(0, 80);
+    $('#c-list').innerHTML = shown.map((n) =>
+      `<button class="row" data-act="edit-client" data-v="${esc(n)}"><span class="main"><div class="title" style="font-weight:400">${nameHtml(n, nq)}</div></span><span class="amt" style="color:var(--muted)">›</span></button>`).join('') +
+      (all.length > shown.length ? `<p class="note" style="text-align:center">…και ${all.length - shown.length} ακόμα. Γράψε για αναζήτηση.</p>` : '') +
+      (!all.length ? '<div class="empty">Κανένα όνομα.</div>' : '');
+  };
+  openSheet({
+    title: `Πελατολόγιο (${S.clients.length})`,
+    body: `
+      <input class="input" data-field="q" placeholder="Αναζήτηση…" autocomplete="off" autocorrect="off" spellcheck="false" value="${esc(q)}">
+      <button class="btn primary" data-act="new-client" style="margin:10px 0 14px">＋ Νέος πελάτης</button>
+      <div class="list" id="c-list"></div>`,
+    onInput(el) { if (el.dataset.field === 'q') { q = el.value; renderList(); } },
+    onAction(act, el) {
+      if (act === 'edit-client') openClientEdit(el.dataset.v, q);
+      if (act === 'new-client') openClientEdit(null, q);
+    },
+  });
+  renderList();
+}
+
+async function openClientEdit(name, backQuery) {
+  const N = name ? splitName(name) : { surname: '', first: '' };
+  const visitCount = name ? (await db.getAll('visits')).filter((v) => v.client === name).length : 0;
+  openSheet({
+    title: name ? 'Επεξεργασία πελάτη' : 'Νέος πελάτης',
+    body: `
+      <div class="grid2">
+        <label class="field"><span class="lbl">Επώνυμο</span>
+          <input class="input" data-field="surname" autocapitalize="words" autocorrect="off" spellcheck="false" value="${esc(N.surname)}"></label>
+        <label class="field"><span class="lbl">Όνομα</span>
+          <input class="input" data-field="first" autocapitalize="words" autocorrect="off" spellcheck="false" value="${esc(N.first)}"></label>
+      </div>
+      ${name ? `<p class="note">Καταχωρήσεις με αυτό το όνομα: <b>${visitCount}</b>. Αν αλλάξεις το όνομα, αλλάζει και σε αυτές.
+        Αν γράψεις όνομα που υπάρχει ήδη, οι δύο πελάτες ενώνονται.</p>` : ''}`,
+    foot: `<div class="btn-row">
+      ${name ? '<button class="btn danger" data-act="delete">Διαγραφή</button>' : ''}
+      <button class="btn primary" data-act="save">Αποθήκευση</button></div>
+      <button class="btn" data-act="back" style="margin-top:8px;min-height:44px;font-size:16px;background:transparent;color:var(--muted)">← Πίσω στη λίστα</button>`,
+    onInput(el) { if (el.dataset.field in N) N[el.dataset.field] = el.value; },
+    async onAction(act) {
+      if (act === 'back') return openClients(backQuery);
+      if (act === 'save') {
+        if (!cleanName(N.surname) || !cleanName(N.first)) return toast('Γράψε επώνυμο ΚΑΙ όνομα');
+        const newName = joinName(N.surname, N.first);
+        const clash = S.clients.find((n) => norm(n) === norm(newName) && n !== name);
+        if (!name) {
+          if (clash) return toast(`Υπάρχει ήδη: ${clash}`);
+          await addClient(newName);
+          toast(`Προστέθηκε: ${newName}`);
+        } else if (newName !== name) {
+          if (clash && !confirm(`Το «${clash}» υπάρχει ήδη.\nΝα ενωθούν σε έναν πελάτη;`)) return;
+          const n = await renameClient(name, clash || newName);
+          toast(`Αποθηκεύτηκε${n ? ` (και σε ${n} ${n === 1 ? 'καταχώρηση' : 'καταχωρήσεις'})` : ''}`);
+        }
+        await loadStatic();
+        await refreshDay();
+        openClients(backQuery);
+      }
+      if (act === 'delete') {
+        if (!confirm(`Διαγραφή «${name}» από το πελατολόγιο;\n\nΟι παλιές καταχωρήσεις μένουν όπως είναι.`)) return;
+        await deleteClient(name);
+        await loadStatic();
+        toast('Διαγράφηκε από το πελατολόγιο');
+        openClients(backQuery);
+      }
+    },
+  });
+}
+
+// ---------------------------------------------------------------- διαχείριση: τιμοκατάλογος
+// Οι αλλαγές τιμών ισχύουν για νέες καταχωρήσεις· οι παλιές κρατούν το ποσό που γράφτηκε.
+function openCatalog() {
+  openSheet({
+    title: 'Τιμοκατάλογος',
+    body: `
+      <p class="note" style="margin-top:0">Οι αλλαγές ισχύουν για νέες καταχωρήσεις. Οι παλιές κρατούν το ποσό τους
+        (για διόρθωση παλιάς: άνοιξέ τη από τη λίστα της ημέρας).</p>
+      <div class="list">${S.categories.map((c) => `
+        <button class="row" data-act="edit-cat" data-v="${esc(c.name)}">
+          <span class="main"><div class="title">${esc(c.name)}</div><div class="sub">${c.prices.map(fmt).join(' · ') || '—'}</div></span>
+          <span class="amt" style="color:var(--muted)">›</span></button>`).join('')}
+      </div>
+      <button class="btn primary" data-act="new-cat" style="margin-top:14px">＋ Νέα εργασία</button>`,
+    onAction(act, el) {
+      if (act === 'edit-cat') openCategoryEdit(S.categories.find((c) => c.name === el.dataset.v));
+      if (act === 'new-cat') openCategoryEdit(null);
+    },
+  });
+}
+
+function openCategoryEdit(cat) {
+  const C = cat ? { ...cat, prices: [...cat.prices] } : { name: '', prices: [], order: Math.max(-1, ...S.categories.map((c) => c.order)) + 1 };
+  const renderPrices = () => {
+    $('#cat-prices').innerHTML = C.prices.length
+      ? C.prices.map((p, i) => `<button class="chip on" data-act="rm-price" data-i="${i}">${fmt(p)} ✕</button>`).join('')
+      : '<p class="note" style="margin:0">Καμία τιμή — στην καταχώρηση γράφεται το ποσό με το χέρι.</p>';
+  };
+  const addPrice = () => {
+    const el = $('#sheet [data-field=newprice]');
+    const v = parseMoney(el.value);
+    if (v == null) return;
+    if (Number.isNaN(v)) return toast('Μη έγκυρο ποσό');
+    if (!C.prices.includes(v)) C.prices = [...C.prices, v].sort((a, b) => a - b);
+    el.value = '';
+    renderPrices();
+  };
+  openSheet({
+    title: cat ? cat.name : 'Νέα εργασία',
+    body: `
+      ${cat ? '' : `<label class="field"><span class="lbl">Όνομα εργασίας</span>
+        <input class="input" data-field="name" autocapitalize="sentences" placeholder="π.χ. Κερατίνη"></label>`}
+      <span class="lbl" style="display:block;font-size:15px;font-weight:600;color:var(--muted);margin:0 4px 8px">Τιμές (πάτα για αφαίρεση)</span>
+      <div class="chips" id="cat-prices"></div>
+      <div class="money" style="margin-top:14px">
+        <input class="input" data-field="newprice" inputmode="decimal" placeholder="Νέα τιμή">
+        <span class="cur">€</span>
+        <button class="btn" data-act="add-price" style="width:auto">Προσθήκη</button>
+      </div>`,
+    foot: `<div class="btn-row">
+      ${cat ? '<button class="btn danger" data-act="delete">Διαγραφή</button>' : ''}
+      <button class="btn primary" data-act="save">Αποθήκευση</button></div>
+      <button class="btn" data-act="back" style="margin-top:8px;min-height:44px;font-size:16px;background:transparent;color:var(--muted)">← Πίσω</button>`,
+    onInput(el) { if (el.dataset.field === 'name') C.name = el.value; },
+    async onAction(act, el) {
+      if (act === 'back') return openCatalog();
+      if (act === 'add-price') addPrice();
+      if (act === 'rm-price') { C.prices.splice(+el.dataset.i, 1); renderPrices(); }
+      if (act === 'save') {
+        addPrice(); // ό,τι έμεινε γραμμένο στο πεδίο
+        const name = cleanName(C.name);
+        if (!name) return toast('Γράψε όνομα εργασίας');
+        if (!cat && (name === OTHER || S.categories.some((c) => norm(c.name) === norm(name)))) return toast('Υπάρχει ήδη εργασία με αυτό το όνομα');
+        await db.transaction(['categories', 'deleted'], (tx) => {
+          tx.objectStore('categories').put({ name, prices: C.prices, order: C.order, updatedAt: Date.now() });
+          tx.objectStore('deleted').delete(`cat:${name}`);
+        });
+        await loadStatic();
+        toast('Αποθηκεύτηκε');
+        openCatalog();
+      }
+      if (act === 'delete') {
+        if (!confirm(`Διαγραφή της εργασίας «${cat.name}» από τον τιμοκατάλογο;\n\nΟι παλιές καταχωρήσεις μένουν όπως είναι.`)) return;
+        await db.transaction(['categories', 'deleted'], (tx) => {
+          tx.objectStore('categories').delete(cat.name);
+          tx.objectStore('deleted').put(tomb('categories', cat.name));
+        });
+        await loadStatic();
+        toast('Διαγράφηκε');
+        openCatalog();
+      }
+    },
+  });
+  renderPrices();
+}
+
 // ---------------------------------------------------------------- ρυθμίσεις / πληροφορίες
 async function openSettings() {
   await ensurePersistent();
@@ -685,6 +957,12 @@ async function openSettings() {
         <div class="kv"><span>Ημέρες με ταμείο</span><span>${days}</span></div>
         <div class="kv"><span>Πελατολόγιο</span><span>${S.clients.length}</span></div>
       </div>
+      <h2>Διορθώσεις</h2>
+      <div class="stack">
+        <button class="btn" data-act="mgmt-clients">Πελατολόγιο (${S.clients.length})</button>
+        <button class="btn" data-act="mgmt-catalog">Τιμοκατάλογος</button>
+      </div>
+      <p class="note">Λάθος σε ποσό ή εργασία μιας μέρας: πήγαινε στη μέρα (‹ ›) και πάτα την καταχώρηση.</p>
       <h2>Αποστολή στη Λυδία</h2>
       <div class="card">
         <div class="kv"><span>Τελευταία αποστολή</span><span>${fmtWhen(sent.lastSent)}</span></div>
@@ -717,6 +995,8 @@ async function openSettings() {
     },
     async onAction(act) {
       if (act === 'send') { closeSheet(); openSendSheet(); }
+      if (act === 'mgmt-clients') openClients();
+      if (act === 'mgmt-catalog') openCatalog();
       if (act === 'dl-backup') {
         backup.download(backup.makeFile(JSON.stringify(await backup.buildBackup()), `kommotirio-backup-${backup.stamp()}.json`, 'application/json'));
       }

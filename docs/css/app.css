@@ -251,3 +251,5 @@ h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .04em; color: v
 .pos-row .item-x { font-size: 20px; width: 44px; }
 label.btn input[type=file] { display: none; }
 .sheet-open .toast { bottom: auto; top: calc(var(--safe-top) + 12px); }
+.suggest button b, .row .title b { font-weight: 750; }
+.suggest button u, .row .title u { text-decoration-color: var(--accent); text-decoration-thickness: 2px; text-underline-offset: 3px; }

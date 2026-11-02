@@ -1,6 +1,6 @@
 // Service worker: κρατά αντίγραφο της εφαρμογής στη συσκευή για χρήση offline.
 // Σε κάθε αλλαγή αρχείων ανεβάζουμε το VERSION, ώστε να κατέβει η νέα έκδοση.
-const VERSION = 'v2.0.0';
+const VERSION = 'v2.1.0';
 const CACHE = `salon-${VERSION}`;
 const ASSETS = [
   './',

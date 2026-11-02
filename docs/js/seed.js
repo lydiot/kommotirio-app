@@ -36,7 +36,7 @@ export async function seedIfNeeded() {
       cats.put({ name: cleanName(name), prices: cents, order });
     });
     const cl = tx.objectStore('clients');
-    clients.forEach((name) => cl.add({ name, source: 'seed', createdAt: now }));
+    clients.forEach((name) => cl.add({ name, source: 'seed', createdAt: 0 }));
     const st = tx.objectStore('staff');
     (seed.staff || []).forEach((name, order) => st.put({ name: cleanName(name), order, active: true }));
     tx.objectStore('meta').put({ key: 'seedVersion', value: SEED_VERSION });
