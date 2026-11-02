@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="el">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Κομμωτήριο</title>
+  <meta name="theme-color" content="#7a3b5e">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Κομμωτήριο">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="format-detection" content="telephone=no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <button class="icon-btn" id="day-prev" aria-label="Προηγούμενη ημέρα">‹</button>
+    <label class="day-label" id="day-label-wrap">
+      <span id="day-label">…</span>
+      <span id="day-lock" class="lock-badge" hidden></span>
+      <input type="date" id="day-picker" aria-label="Επιλογή ημερομηνίας">
+    </label>
+    <button class="icon-btn" id="day-next" aria-label="Επόμενη ημέρα">›</button>
+    <button class="icon-btn" id="open-settings" aria-label="Ρυθμίσεις">⚙︎</button>
+  </header>
+  <button id="go-today" class="go-today" hidden>Επιστροφή στο σήμερα</button>
+
+  <div id="install-banner" class="banner" hidden></div>
+
+  <main id="main">
+    <section id="tab-visits" class="tab" data-tab="visits"></section>
+    <section id="tab-expenses" class="tab" data-tab="expenses" hidden></section>
+    <section id="tab-till" class="tab" data-tab="till" hidden></section>
+  </main>
+
+  <nav class="tabbar" id="tabbar">
+    <button data-tab="visits" class="active"><span class="ti">✂︎</span>Πελάτες</button>
+    <button data-tab="expenses"><span class="ti">−</span>Έξοδα</button>
+    <button data-tab="till"><span class="ti">€</span>Ταμείο</button>
+  </nav>
+
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-panel" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <noscript>Η εφαρμογή χρειάζεται JavaScript.</noscript>
+</body>
+</html>
