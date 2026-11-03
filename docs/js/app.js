@@ -4,7 +4,7 @@ import * as backup from './backup.js';
 import { renderResults, overdueClients } from './results.js';
 import * as lock from './lock.js';
 
-const APP_VERSION = '2.9.0';
+const APP_VERSION = '3.0.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -139,6 +139,7 @@ const S = {
   clients: [],
   persisted: null,
   phones: new Map(), // όνομα → τηλέφωνο (προαιρετικό)
+  products: [],      // ονόματα προϊόντων μεταπώλησης (προτάσεις)
   device: null, // τυχαίο id αυτής της συσκευής (για το «τι δεν έχει σταλεί»)
 };
 
@@ -153,10 +154,21 @@ async function loadStatic() {
   const cl = await db.getAll('clients');
   S.clients = cl.map((c) => c.name).sort((a, b) => a.localeCompare(b, 'el'));
   S.phones = new Map(cl.filter((c) => c.phone).map((c) => [c.name, c.phone]));
+  await loadProducts();
 }
 
 // Φορτώνει την ημέρα S.date. Αν στο μεταξύ άλλαξε ημέρα (γρήγορα πατήματα ‹ ›),
 // τα παλιά αποτελέσματα πετιούνται, ώστε να μην ανακατευτούν δύο ημέρες.
+// Ονόματα προϊόντων μεταπώλησης που έχουν ξαναγραφτεί (για προτάσεις), τα συχνότερα πρώτα.
+async function loadProducts() {
+  const count = new Map();
+  for (const d of await db.getAll('days')) for (const it of d.retailItems || []) if (it.product) count.set(it.product, (count.get(it.product) || 0) + 1);
+  S.products = [...count].sort((a, b) => b[1] - a[1]).map(([p]) => p);
+}
+
+// Γραμμές μεταπώλησης. Παλιές ημέρες (μόνο σύνολο, χωρίς προϊόντα) → μία γραμμή χωρίς όνομα.
+const retailItemsOf = (d) => d.retailItems || (d.retail != null ? [{ product: '', amount: d.retail }] : []);
+
 async function loadDay() {
   const date = S.date;
   const byTime = (a, b) => a.createdAt - b.createdAt;
@@ -356,6 +368,15 @@ function posRowHtml(value, i, disabled) {
   </div>`;
 }
 
+function retailRowHtml(it, disabled) {
+  return `<div class="retail-row">
+    <input class="input" data-retail="product" list="product-list" autocapitalize="sentences" autocomplete="off"
+      placeholder="Προϊόν" value="${esc(it?.product || '')}" ${disabled ? 'disabled' : ''}>
+    <span class="money"><input class="input" inputmode="decimal" data-retail="amount" value="${toInput(it?.amount ?? null)}" placeholder="0" ${disabled ? 'disabled' : ''}><span class="cur">€</span></span>
+    ${disabled ? '' : '<button class="item-x" data-act="retail-rm" aria-label="Αφαίρεση προϊόντος">✕</button>'}
+  </div>`;
+}
+
 function renderTill() {
   const d = S.day, L = d.locked;
   const parts = d.posParts || [];
@@ -369,9 +390,15 @@ function renderTill() {
       ${L ? '' : '<button class="btn" data-act="pos-add" style="margin-top:4px">＋ Γραμμή</button>'}
       <div id="pos-check" style="margin-top:10px"></div>
     </div>
-    <h2>Μεταπώληση & ΦΠΑ</h2>
+    <h2>Μεταπώληση</h2>
     <div class="card">
-      ${moneyField('Μεταπώληση / προϊόντα', 'retail', d.retail, L)}
+      <div id="retail-items">${(() => { const it = retailItemsOf(d); return (it.length || L ? it : [null]).map((x) => retailRowHtml(x, L)).join('') || '<p class="note">Καμία πώληση.</p>'; })()}</div>
+      ${L ? '' : '<button class="btn" data-act="retail-add" style="margin-top:4px">＋ Προϊόν</button>'}
+      <div id="retail-sum" class="note" style="margin:10px 4px 0"></div>
+      <datalist id="product-list">${S.products.map((p) => `<option value="${esc(p)}"></option>`).join('')}</datalist>
+    </div>
+    <h2>ΦΠΑ</h2>
+    <div class="card">
       ${moneyField('ΦΠΑ ημέρας', 'vat', d.vat, L)}
     </div>
     <h2>Σύνοψη ημέρας</h2>
@@ -401,6 +428,11 @@ function renderTillSummary() {
     }
   }
   $('#pos-check').innerHTML = check;
+  const ri = retailItemsOf(d);
+  const noAmount = [...document.querySelectorAll('#retail-items .retail-row')].filter((r) => r.querySelector('[data-retail=product]').value.trim() && !r.querySelector('[data-retail=amount]').value.trim()).length;
+  const rs = $('#retail-sum');
+  if (rs) rs.innerHTML = (ri.length ? `${ri.length} ${ri.length === 1 ? 'προϊόν' : 'προϊόντα'} · σύνολο <b>${fmt(sum(ri.map((x) => x.amount)))}</b>` : '')
+    + (noAmount ? `<div class="warn" style="margin-top:6px">Λείπει η τιμή σε ${noAmount} ${noAmount === 1 ? 'γραμμή' : 'γραμμές'} — χωρίς τιμή δεν αποθηκεύεται.</div>` : '');
 
   $('#till-summary').innerHTML = `
     <div class="kv"><span>Εργασίες (${S.visits.length})</span><span>${fmt(t.services)}</span></div>
@@ -1367,11 +1399,12 @@ async function goTo(date) {
   window.scrollTo(0, 0);
 }
 
-const DAY_FIELDS = ['posTotal', 'retail', 'vat'];
+const DAY_FIELDS = ['posTotal', 'vat'];
 
 async function onTillChange(el) {
   if (S.day.locked) return;
   if (el.hasAttribute('data-pos')) return onPosChange(el);
+  if (el.dataset.retail) return onRetailChange(el);
   const key = el.dataset.day;
   const v = parseMoney(el.value);
   if (Number.isNaN(v)) { toast('Μη έγκυρο ποσό'); el.focus(); return; }
@@ -1390,6 +1423,26 @@ async function onPosChange(el) {
   if (values.some(Number.isNaN)) { toast('Μη έγκυρο ποσό'); el?.focus(); return; }
   inputs.forEach((i, k) => { if (values[k] != null) i.value = toInput(values[k]); });
   await saveDay({ posParts: values.filter((v) => v != null) });
+  renderTillSummary();
+  renderSendStatus();
+  if (!S.persisted) ensurePersistent();
+}
+
+// Μεταπώληση: αποθηκεύονται οι γραμμές με τιμή· το σύνολο (retail) κρατιέται για τα αποτελέσματα.
+async function onRetailChange(el) {
+  if (S.day.locked) return;
+  const rows = [...document.querySelectorAll('#retail-items .retail-row')];
+  const items = [];
+  for (const r of rows) {
+    const pIn = r.querySelector('[data-retail=product]'), aIn = r.querySelector('[data-retail=amount]');
+    const amount = parseMoney(aIn.value);
+    if (Number.isNaN(amount)) { toast('Μη έγκυρο ποσό'); aIn.focus(); return; }
+    if (amount == null) continue;
+    if (el === aIn || el === pIn || !el) aIn.value = toInput(amount);
+    items.push({ product: cleanName(pIn.value), amount });
+  }
+  await saveDay({ retailItems: items, retail: items.length ? sum(items.map((x) => x.amount)) : null });
+  for (const it of items) if (it.product && !S.products.includes(it.product)) S.products.push(it.product);
   renderTillSummary();
   renderSendStatus();
   if (!S.persisted) ensurePersistent();
@@ -1433,13 +1486,23 @@ function bind() {
       renumberPos();
       await onPosChange();
     }
+    if (act === 'retail-add') {
+      const box = $('#retail-items');
+      box.querySelector('p.note')?.remove();
+      box.insertAdjacentHTML('beforeend', retailRowHtml(null, false));
+      box.lastElementChild.querySelector('input').focus();
+    }
+    if (act === 'retail-rm') {
+      el.closest('.retail-row').remove();
+      await onRetailChange();
+    }
     if (act === 'send') openSendSheet();
     if (act === 'edit-expense') openExpense(S.expenses.find((x) => x.id === +el.dataset.id));
     if (act === 'lock') {
       if (!confirm(`Κλείσιμο της ημέρας ${dayTitle(S.date)};`)) return;
       // Πρώτα αποθηκεύουμε ό,τι γράφεται εκείνη τη στιγμή σε πεδίο.
       const active = document.activeElement;
-      if (active?.dataset?.day || active?.hasAttribute?.('data-pos')) await onTillChange(active);
+      if (active?.dataset?.day || active?.dataset?.retail || active?.hasAttribute?.('data-pos')) await onTillChange(active);
       await saveDay({ locked: true, lockedAt: Date.now() });
       render();
       // Υποχρεωτικό βήμα: αποστολή / backup αμέσως μετά το κλείσιμο.
@@ -1452,10 +1515,10 @@ function bind() {
     }
   });
   $('#main').addEventListener('change', (e) => {
-    if (e.target.dataset.day || e.target.hasAttribute('data-pos')) onTillChange(e.target);
+    if (e.target.dataset.day || e.target.dataset.retail || e.target.hasAttribute('data-pos')) onTillChange(e.target);
   });
   $('#main').addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && (e.target.dataset.day || e.target.hasAttribute('data-pos'))) e.target.blur();
+    if (e.key === 'Enter' && (e.target.dataset.day || e.target.dataset.retail || e.target.hasAttribute('data-pos'))) e.target.blur();
   });
 
   const sheet = $('#sheet');

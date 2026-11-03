@@ -435,3 +435,12 @@ html.booting .cover, html.covered .cover { display: block; }
 .lock-forgot .btn { color: #fff; border-color: #fff; }
 .lock-forgot .btn:not(.danger) { background: rgba(255,255,255,.18); }
 @media print { .cover, .lock { display: none !important; } }
+
+/* ---------- Μεταπώληση: γραμμές προϊόντων ---------- */
+.retail-row { display: grid; grid-template-columns: 1fr 120px 40px; gap: 8px; align-items: center; margin-bottom: 8px; }
+.retail-row .money .input { min-height: 52px; }
+.retail-row .item-x { font-size: 20px; }
+.retail-row { grid-template-columns: 1fr 104px 30px; gap: 6px; }
+.retail-row [data-retail=product] { font-size: 17px; padding: 0 10px; }
+.retail-row .money { gap: 4px; }
+.retail-row .money .input { padding: 0 8px; }

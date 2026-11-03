@@ -56,7 +56,8 @@ export async function buildCSV(dates = null) {
         rows.push([D, 'Εργασία', i + 1, v.client, v.staff, desc, csvMoney(it.amount)]);
       }
     });
-    if (day?.retail != null) rows.push([D, 'Μεταπώληση', '', '', '', '', csvMoney(day.retail)]);
+    if (day?.retailItems) day.retailItems.forEach((it, i) => rows.push([D, 'Μεταπώληση', i + 1, '', '', it.product || '', csvMoney(it.amount)]));
+    else if (day?.retail != null) rows.push([D, 'Μεταπώληση', '', '', '', '', csvMoney(day.retail)]);
     es.sort((a, b) => a.createdAt - b.createdAt).forEach((e) => rows.push([D, 'Έξοδο', '', '', '', e.desc, csvMoney(e.amount)]));
     if (day?.posTotal != null) rows.push([D, 'POS σύνολο', '', '', '', '', csvMoney(day.posTotal)]);
     (day?.posParts || []).forEach((p, i) => rows.push([D, 'POS συναλλαγή', i + 1, '', '', '', csvMoney(p)]));

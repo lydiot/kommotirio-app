@@ -577,6 +577,7 @@ function secServices(ctx) {
         ${cmp ? `<td class="${d > 0 ? 'ok' : d < 0 ? 'bad' : ''}">${d == null ? 'νέο' : `${d > 0 ? '+' : ''}${d}`}</td>` : ''}</tr>`;
     }).join('')}</tbody></table></div>
   </section>
+  ${retailCard(a)}
   <div class="rgrid">
     <section class="rcard"><h3>Συχνότεροι συνδυασμοί στην ίδια επίσκεψη</h3>
       ${ss.pairs.length ? hbars(ss.pairs.map(([l, v]) => ({ label: l, value: v })), (v) => `${v}×`) : '<p class="empty">Καμία επίσκεψη με 2+ εργασίες.</p>'}
@@ -584,6 +585,27 @@ function secServices(ctx) {
     ${ss.notes.length ? `<section class="rcard"><h3>«Άλλο» — τι γράφτηκε</h3>${hbars(ss.notes.map(([l, v]) => ({ label: l, value: v })), (v) => `${v}×`)}
       <p class="note">Αν κάτι επαναλαμβάνεται συχνά, αξίζει να μπει στον τιμοκατάλογο.</p></section>` : ''}
   </div>`;
+}
+
+// Μεταπώληση ανά προϊόν (παλιές ημέρες χωρίς προϊόντα → «χωρίς όνομα»).
+function retailCard(a) {
+  if (R.staff) return '';
+  const g = new Map();
+  for (const d of a.days) {
+    const items = d.retailItems || (d.retail != null ? [{ product: '', amount: d.retail }] : []);
+    for (const it of items) {
+      const name = it.product || '(χωρίς όνομα)', k = norm(name);
+      const x = g.get(k) || { name, count: 0, amount: 0 };
+      x.count++; x.amount += it.amount; g.set(k, x);
+    }
+  }
+  const rows = [...g.values()].sort((x, y) => y.amount - x.amount);
+  if (!rows.length) return '';
+  return `<section class="rcard wide" style="margin-top:14px"><h3>Μεταπώληση — προϊόντα (${fmt(a.retail)})</h3>
+    ${hbars(rows.map((r) => ({ label: r.name, value: r.amount, extra: `${r.count}×` })))}
+    <div class="tscroll"><table class="rtable"><thead><tr><th class="txt">Προϊόν</th><th>Πωλήσεις</th><th>Ποσό</th><th>Μέση τιμή</th><th>Μερίδιο</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr><th class="txt">${esc(r.name)}</th><td>${r.count}</td><td>${fmt(r.amount)}</td><td>${fmt(r.amount / r.count)}</td><td>${pct(r.amount, a.retail)}</td></tr>`).join('')}</tbody></table></div>
+  </section>`;
 }
 
 function secStaff(ctx) {
