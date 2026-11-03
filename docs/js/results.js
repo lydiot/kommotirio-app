@@ -80,6 +80,9 @@ async function load() {
   const [visits, days, expenses, staff, clients] = await Promise.all(['visits', 'days', 'expenses', 'staff', 'clients'].map((s) => db.getAll(s)));
   const phones = new Map(clients.filter((c) => c.phone).map((c) => [c.name, c.phone]));
   const fixed = ((await db.getMeta('fixedCosts')) || { items: [] }).items;
+  const [products, moves] = await Promise.all([db.getAll('products'), db.getAll('moves')]);
+  const prodById = new Map(products.map((p) => [p.id, p]));
+  const prodByName = new Map(products.map((p) => [norm(p.name.replace(/\s+/g, ' ').trim()), p]));
   visits.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.createdAt - b.createdAt));
   const dayMap = new Map(days.map((d) => [d.date, d]));
   const all = [...visits.map((v) => v.date), ...days.map((d) => d.date), ...expenses.map((e) => e.date)].sort();
@@ -92,7 +95,7 @@ async function load() {
   const years = new Set([new Date().getFullYear()]);
   all.forEach((d) => years.add(+d.slice(0, 4)));
   D = {
-    visits, days, expenses, dayMap, hist, phones, fixed,
+    visits, days, expenses, dayMap, hist, phones, fixed, prodById, prodByName, moves,
     staffOrder: staff.sort((a, b) => a.order - b.order).map((s) => s.name),
     first: all[0] || today(), last: all[all.length - 1] || today(),
     years: [...years].sort((a, b) => b - a),
@@ -558,7 +561,7 @@ function clientProfile(name, ctx) {
 
 function secServices(ctx) {
   const { ss, a, cmp, ssPrev } = ctx;
-  if (!ss.cats.length) return '<p class="empty">Καμία εργασία στην περίοδο.</p>';
+  if (!ss.cats.length) return `<p class="empty">Καμία εργασία στην περίοδο.</p>${retailCard(a)}${usageCard(ctx.per)}`;
   const key = R.catSort === 'amount' ? 'amount' : 'count';
   const rows = [...ss.cats].sort((x, y) => y[key] - x[key]);
   const prevMap = new Map((ssPrev?.cats || []).map((c) => [c.name, c]));
@@ -578,6 +581,7 @@ function secServices(ctx) {
     }).join('')}</tbody></table></div>
   </section>
   ${retailCard(a)}
+  ${usageCard(ctx.per)}
   <div class="rgrid">
     <section class="rcard"><h3>Συχνότεροι συνδυασμοί στην ίδια επίσκεψη</h3>
       ${ss.pairs.length ? hbars(ss.pairs.map(([l, v]) => ({ label: l, value: v })), (v) => `${v}×`) : '<p class="empty">Καμία επίσκεψη με 2+ εργασίες.</p>'}
@@ -595,16 +599,44 @@ function retailCard(a) {
     const items = d.retailItems || (d.retail != null ? [{ product: '', amount: d.retail }] : []);
     for (const it of items) {
       const name = it.product || '(χωρίς όνομα)', k = norm(name);
-      const x = g.get(k) || { name, count: 0, amount: 0 };
-      x.count++; x.amount += it.amount; g.set(k, x);
+      const prod = (it.productId && D.prodById.get(it.productId)) || D.prodByName.get(norm(name.replace(/\s+/g, ' ').trim()));
+      const x = g.get(k) || { name, count: 0, amount: 0, cost: 0, costKnown: 0 };
+      x.count++; x.amount += it.amount;
+      if (prod?.cost != null) { x.cost += prod.cost; x.costKnown++; }
+      g.set(k, x);
     }
   }
   const rows = [...g.values()].sort((x, y) => y.amount - x.amount);
   if (!rows.length) return '';
+  const anyCost = rows.some((r) => r.costKnown);
+  const tCost = sum(rows.map((r) => r.cost)), tAmtKnown = sum(rows.filter((r) => r.costKnown === r.count).map((r) => r.amount));
+  const allKnown = rows.every((r) => r.costKnown === r.count);
   return `<section class="rcard wide" style="margin-top:14px"><h3>Μεταπώληση — προϊόντα (${fmt(a.retail)})</h3>
     ${hbars(rows.map((r) => ({ label: r.name, value: r.amount, extra: `${r.count}×` })))}
-    <div class="tscroll"><table class="rtable"><thead><tr><th class="txt">Προϊόν</th><th>Πωλήσεις</th><th>Ποσό</th><th>Μέση τιμή</th><th>Μερίδιο</th></tr></thead>
-    <tbody>${rows.map((r) => `<tr><th class="txt">${esc(r.name)}</th><td>${r.count}</td><td>${fmt(r.amount)}</td><td>${fmt(r.amount / r.count)}</td><td>${pct(r.amount, a.retail)}</td></tr>`).join('')}</tbody></table></div>
+    ${anyCost ? `<p class="note"><b>Κέρδος μεταπώλησης${allKnown ? '' : ' (όπου υπάρχει τιμή αγοράς)'}: ${fmtS((allKnown ? a.retail : tAmtKnown) - tCost)}</b> · κόστος ${fmt(tCost)}</p>` : '<p class="note">Βάλε <b>τιμή αγοράς</b> στα προϊόντα (Αποθήκη) για να φαίνεται και το κέρδος της μεταπώλησης.</p>'}
+    <div class="tscroll"><table class="rtable"><thead><tr><th class="txt">Προϊόν</th><th>Πωλήσεις</th><th>Ποσό</th><th>Μέση τιμή</th>${anyCost ? '<th>Κόστος</th><th>Κέρδος</th>' : ''}<th>Μερίδιο</th></tr></thead>
+    <tbody>${rows.map((r) => `<tr><th class="txt">${esc(r.name)}</th><td>${r.count}</td><td>${fmt(r.amount)}</td><td>${fmt(r.amount / r.count)}</td>
+      ${anyCost ? (r.costKnown === r.count ? `<td>${fmt(r.cost)}</td><td>${fmtS(r.amount - r.cost)}</td>` : '<td>—</td><td>—</td>') : ''}<td>${pct(r.amount, a.retail)}</td></tr>`).join('')}</tbody></table></div>
+  </section>`;
+}
+
+// Αναλώσιμα που χρησιμοποιήθηκαν (κινήσεις «χρήση» της αποθήκης).
+function usageCard(per) {
+  if (R.staff) return '';
+  const g = new Map();
+  for (const m of D.moves) {
+    if (m.type !== 'use' || !inR(m.date, per)) continue;
+    const p = D.prodById.get(m.productId); const name = p?.name || '(διαγραμμένο προϊόν)';
+    const x = g.get(name) || { name, qty: 0, cost: 0, known: true };
+    x.qty += m.qty; if (p?.cost != null) x.cost += p.cost * m.qty; else x.known = false;
+    g.set(name, x);
+  }
+  const rows = [...g.values()].sort((x, y) => y.qty - x.qty);
+  if (!rows.length) return '';
+  return `<section class="rcard wide" style="margin-top:14px"><h3>Αναλώσιμα που χρησιμοποιήθηκαν</h3>
+    ${hbars(rows.map((r) => ({ label: r.name, value: r.qty })), (v) => `${v} τεμ.`, 's2f')}
+    <p class="note">Κόστος αναλωσίμων (όπου υπάρχει τιμή αγοράς): <b>${fmt(sum(rows.map((r) => r.cost)))}</b>. Ενημερωτικό — δεν αφαιρείται από το κέρδος,
+      γιατί οι αγορές καταγράφονται ήδη στα έξοδα.</p>
   </section>`;
 }
 

@@ -3,8 +3,9 @@ import { seedIfNeeded, cleanName } from './seed.js';
 import * as backup from './backup.js';
 import { renderResults, overdueClients } from './results.js';
 import * as lock from './lock.js';
+import * as stock from './stock.js';
 
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.1.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -237,6 +238,7 @@ function renderTabs() {
   document.querySelectorAll('main .tab').forEach((s) => (s.hidden = s.dataset.tab !== S.tab));
   document.body.classList.toggle('results-mode', S.tab === 'results');
   if (S.tab === 'results') renderResults($('#tab-results')).catch((err) => toast(`Σφάλμα αποτελεσμάτων: ${err.message || err}`));
+  if (S.tab === 'stock') stock.renderStockTab($('#tab-stock')).catch((err) => toast(`Σφάλμα αποθήκης: ${err.message || err}`));
 }
 
 function itemsLine(items) {
@@ -264,6 +266,7 @@ function renderVisits() {
       <div class="stat"><div class="k">Πελάτες</div><div class="v">${S.visits.length}</div></div>
       ${staffChips ? `<div class="stat wide"><div class="k">Ανά υπάλληλο</div><div class="staff-chips">${staffChips}</div></div>` : ''}
     </div>
+    <div id="order-alert"></div>
     <div id="call-card"></div>
     <div style="margin-top:14px">
       <button class="btn primary big" data-act="new-visit" ${S.day.locked ? 'disabled' : ''}>＋ Νέος πελάτης</button>
@@ -283,6 +286,19 @@ async function callList() {
     if (!s || c.last > s.last) return true;
     return s.until !== 'never' && s.until <= now;
   });
+}
+
+async function renderOrderAlert() {
+  const box = $('#order-alert');
+  if (!box) return;
+  if (S.date !== todayStr()) { box.innerHTML = ''; return; }
+  const low = await stock.lowStock();
+  if (!$('#order-alert')) return;
+  box.innerHTML = low.length ? `<button class="call-card order" data-act="go-stock">
+      <span class="cc-icon">🛒</span>
+      <span class="cc-text"><b>${low.length} ${low.length === 1 ? 'προϊόν' : 'προϊόντα'} να παραγγελθ${low.length === 1 ? 'εί' : 'ούν'}</b>
+        <span>${esc(low.slice(0, 3).map((p) => p.name).join(', '))}${low.length > 3 ? '…' : ''}</span></span>
+      <span class="cc-go">›</span></button>` : '';
 }
 
 async function renderCallCard() {
@@ -369,7 +385,8 @@ function posRowHtml(value, i, disabled) {
 }
 
 function retailRowHtml(it, disabled) {
-  return `<div class="retail-row">
+  // data-at: ώρα πώλησης· «legacy» = παλιά γραμμή χωρίς ώρα (κρατά την αρχή της μέρας της).
+  return `<div class="retail-row" data-at="${it ? (it.at || 'legacy') : ''}" data-pid="${it?.productId || ''}">
     <input class="input" data-retail="product" list="product-list" autocapitalize="sentences" autocomplete="off"
       placeholder="Προϊόν" value="${esc(it?.product || '')}" ${disabled ? 'disabled' : ''}>
     <span class="money"><input class="input" inputmode="decimal" data-retail="amount" value="${toInput(it?.amount ?? null)}" placeholder="0" ${disabled ? 'disabled' : ''}><span class="cur">€</span></span>
@@ -395,7 +412,7 @@ function renderTill() {
       <div id="retail-items">${(() => { const it = retailItemsOf(d); return (it.length || L ? it : [null]).map((x) => retailRowHtml(x, L)).join('') || '<p class="note">Καμία πώληση.</p>'; })()}</div>
       ${L ? '' : '<button class="btn" data-act="retail-add" style="margin-top:4px">＋ Προϊόν</button>'}
       <div id="retail-sum" class="note" style="margin:10px 4px 0"></div>
-      <datalist id="product-list">${S.products.map((p) => `<option value="${esc(p)}"></option>`).join('')}</datalist>
+      <datalist id="product-list">${[...new Set([...stock.productNames(), ...S.products])].map((p) => `<option value="${esc(p)}"></option>`).join('')}</datalist>
     </div>
     <h2>ΦΠΑ</h2>
     <div class="card">
@@ -455,6 +472,7 @@ function render() {
   renderTabs();
   renderVisits();
   renderCallCard();
+  renderOrderAlert();
   renderExpenses();
   renderTill();
   renderBackupBanner();
@@ -918,6 +936,7 @@ async function importFromFile(file) {
     await loadStatic();
     await refreshDay();
     if (res.kind === 'clients') toast(`Πελατολόγιο: προστέθηκαν ${res.clientsAdded} ονόματα`);
+    else if (res.kind === 'products') toast(`Κατάλογος: προστέθηκαν ${res.productsAdded} προϊόντα στην αποθήκη`);
     else toast(`Εισαγωγή: ${res.added} νέα, ${res.updated} ενημερώσεις, ${res.deleted} διαγραφές, ${res.days} ημέρες ταμείου`);
     return true;
   } catch (err) {
@@ -1300,7 +1319,7 @@ async function openSettings() {
           <input type="file" data-field="import" accept=".json,.txt,application/json,text/plain" hidden></label>
       </div>
       <p class="note">Η εισαγωγή <b>συγχωνεύει</b>: δεν σβήνει ό,τι υπάρχει. Δέχεται αρχείο backup της εφαρμογής
-        (από άλλη συσκευή ή για επαναφορά) ή αρχείο πελατολογίου.</p>
+        (από άλλη συσκευή ή για επαναφορά), αρχείο πελατολογίου ή κατάλογο προϊόντων.</p>
       <p class="note" style="text-align:center;margin-top:18px">Έκδοση ${APP_VERSION}</p>`,
     onInput(el) {
       if (el.dataset.field === 'phone') db.setMeta('lydiaPhone', el.value.trim());
@@ -1435,13 +1454,27 @@ async function onRetailChange(el) {
   const items = [];
   for (const r of rows) {
     const pIn = r.querySelector('[data-retail=product]'), aIn = r.querySelector('[data-retail=amount]');
+    // Γνωστό προϊόν χωρίς τιμή → συμπληρώνεται η τιμή πώλησης από την αποθήκη.
+    if (el === pIn && !aIn.value.trim()) {
+      const p = stock.productByName(pIn.value);
+      if (p?.price != null) aIn.value = toInput(p.price);
+    }
     const amount = parseMoney(aIn.value);
     if (Number.isNaN(amount)) { toast('Μη έγκυρο ποσό'); aIn.focus(); return; }
     if (amount == null) continue;
     if (el === aIn || el === pIn || !el) aIn.value = toInput(amount);
-    items.push({ product: cleanName(pIn.value), amount });
+    if (r.dataset.at === 'legacy') { const [y, m, d] = S.date.split('-').map(Number); r.dataset.at = String(new Date(y, m - 1, d).getTime()); }
+    if (!r.dataset.at) r.dataset.at = String(Date.now());
+    items.push({ product: cleanName(pIn.value), amount, at: +r.dataset.at });
   }
-  await saveDay({ retailItems: items, retail: items.length ? sum(items.map((x) => x.amount)) : null });
+  const before = new Set((S.day.retailItems || []).map((x) => x.at));
+  const linked = await stock.linkRetail(items);
+  await saveDay({ retailItems: linked, retail: linked.length ? sum(linked.map((x) => x.amount)) : null });
+  // Νέα πώληση που έριξε το απόθεμα στο όριο → ειδοποίηση.
+  await stock.loadStock();
+  const lowNow = (await stock.lowStock()).filter((p) => linked.some((x) => x.productId === p.id && !before.has(x.at)));
+  if (lowNow.length) toast(`⚠️ ${lowNow.map((p) => `${p.name}: ${p.stock <= 0 ? 'τελείωσε' : `έμειναν ${p.stock}`}`).join(' · ')} — στη λίστα παραγγελίας`);
+  renderOrderAlert();
   for (const it of items) if (it.product && !S.products.includes(it.product)) S.products.push(it.product);
   renderTillSummary();
   renderSendStatus();
@@ -1473,6 +1506,7 @@ function bind() {
     const act = el.dataset.act;
     if (act === 'new-visit') openVisit();
     if (act === 'open-calls') openCalls();
+    if (act === 'go-stock') { S.tab = 'stock'; renderTabs(); window.scrollTo(0, 0); }
     if (act === 'edit-visit') openVisit(S.visits.find((v) => v.id === +el.dataset.id));
     if (act === 'new-expense') openExpense();
     if (act === 'pos-add') {
@@ -1568,6 +1602,8 @@ function bind() {
 async function start() {
   try {
     bind();
+    stock.initStock({ $, esc, fmt, parseMoney, toInput, cleanName, todayStr, openSheet, closeSheet, toast,
+      device: () => S.device, onChange: () => { renderOrderAlert(); } });
     registerSW();
     await seedIfNeeded();
     S.device = await db.getMeta('deviceId');

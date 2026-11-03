@@ -444,3 +444,32 @@ html.booting .cover, html.covered .cover { display: block; }
 .retail-row [data-retail=product] { font-size: 17px; padding: 0 10px; }
 .retail-row .money { gap: 4px; }
 .retail-row .money .input { padding: 0 8px; }
+
+/* ---------- Αποθήκη ---------- */
+.tabbar { grid-template-columns: repeat(5, 1fr); padding-left: 4px; padding-right: 4px; }
+.tabbar button { font-size: 12px; padding: 0 2px; letter-spacing: -.01em; }
+.order-card { background: var(--warn-bg); color: var(--warn-ink); border-radius: var(--radius); padding: 12px 14px; }
+.oc-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
+.oc-head .btn { width: auto; min-height: 40px; font-size: 15px; padding: 0 12px; }
+.oc-item { display: flex; justify-content: space-between; gap: 10px; width: 100%; border: 0; background: transparent; color: inherit;
+  padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--warn-ink) 20%, transparent); text-align: left; font-size: 16px; }
+.oc-item small { opacity: .75; }
+.st-row { display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px 6px 6px 0; }
+.st-main { flex: 1; min-width: 0; border: 0; background: transparent; text-align: left; padding: 6px 12px; }
+.st-main .title { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-main .sub { font-size: 14px; color: var(--muted); }
+.st-qty { min-width: 40px; text-align: center; font-size: 22px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.st-qty.low { color: var(--danger); }
+.st-minus { min-width: 56px; height: 48px; border-radius: 12px; border: 1.5px solid var(--line); background: var(--surface-2); font-weight: 700; font-size: 18px; }
+.st-filter .chip { min-height: 40px; font-size: 15px; }
+.st-stock { display: flex; align-items: baseline; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 16px; }
+.st-stock b { font-size: 34px; font-variant-numeric: tabular-nums; }
+.st-stock small { color: var(--muted); margin-left: auto; }
+.st-stock.low b, .st-stock.low small { color: var(--danger); }
+.st-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.st-actions .btn { min-height: 50px; font-size: 16px; }
+.st-ev { min-height: 48px; padding: 8px 12px; }
+.rcv-row { display: grid; grid-template-columns: 1fr 60px 92px 28px; gap: 6px; align-items: center; margin-bottom: 8px; }
+.rcv-row .input { padding: 0 8px; font-size: 16px; min-height: 50px; }
+.rcv-row .money { gap: 2px; }
+.call-card.order { margin-top: 12px; }

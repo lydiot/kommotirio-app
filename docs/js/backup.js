@@ -6,9 +6,10 @@ import * as db from './db.js';
 import { cleanName } from './seed.js';
 
 export const BACKUP_APP = 'kommotirio';
+const normKey = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/ς/g, 'σ').replace(/\s+/g, ' ').trim();
 export const BACKUP_FORMAT = 1;
 
-const DATA_STORES = ['categories', 'clients', 'staff', 'days', 'visits', 'expenses', 'deleted'];
+const DATA_STORES = ['categories', 'clients', 'staff', 'days', 'visits', 'expenses', 'deleted', 'products', 'moves'];
 
 // ---------------------------------------------------------------- πλήρες backup (JSON)
 export async function buildBackup() {
@@ -78,6 +79,7 @@ export async function pendingDates(since, device) {
   for (const d of days) if (mine(d) && (d.updatedAt || 0) > since) out.add(d.date);
   for (const v of [...visits, ...expenses]) if (mine(v) && (v.updatedAt || v.createdAt || 0) > since) out.add(v.date);
   for (const t of deleted) if (mine(t) && t.deletedAt > since && t.date) out.add(t.date);
+  for (const m of await db.getAll('moves')) if (mine(m) && (m.updatedAt || 0) > since) out.add(m.date);
   return [...out].sort();
 }
 
@@ -88,6 +90,21 @@ export async function importText(text) {
   let obj;
   try { obj = JSON.parse(text.replace(/^﻿/, '')); } catch { throw new Error('Το αρχείο δεν είναι αρχείο backup της εφαρμογής.'); }
 
+  // Κατάλογος προϊόντων: { "products": [ { name, code?, size?, price?, cost?, kind? } ] } — προσθέτει όσα λείπουν.
+  if (obj && obj.app !== BACKUP_APP && Array.isArray(obj.products)) {
+    const have = new Set((await db.getAll('products')).map((p) => normKey(p.name)));
+    const now = Date.now(), add = [];
+    for (const p of obj.products) {
+      const name = cleanName(p.name);
+      if (!name || have.has(normKey(name))) continue;
+      have.add(normKey(name));
+      const toC = (v) => (v == null || v === '' ? null : Math.round(Number(String(v).replace(',', '.')) * 100));
+      add.push({ id: db.newUid(), name, kind: ['retail', 'use', 'both'].includes(p.kind) ? p.kind : 'both',
+        code: p.code || '', size: p.size || '', price: toC(p.price), cost: toC(p.cost), min: 1, updatedAt: now });
+    }
+    if (add.length) await db.transaction(['products'], (tx) => add.forEach((p) => tx.objectStore('products').put(p)));
+    return { kind: 'products', productsAdded: add.length };
+  }
   // Σκέτο πελατολόγιο (π.χ. το αρχικό seed.json με "clients": [...]).
   if (obj && obj.app !== BACKUP_APP && Array.isArray(obj.clients)) {
     return { kind: 'clients', clientsAdded: await addClients(obj.clients, 'seed') };
@@ -148,11 +165,28 @@ export async function importText(text) {
       if (cur && (cur.createdAt || 0) <= t.deletedAt) { writes.push(['clients', 'delete', cur.id]); res.clientsRemoved = (res.clientsRemoved || 0) + 1; }
     }
   }
+  // Αποθήκη: προϊόντα (νεότερη εκδοχή, ίχνος «prod:id») και κινήσεις (ανά uid, ίχνος uid).
+  const localProd = new Map(local.products.map((p) => [p.id, p]));
+  for (const p of inc.products || []) {
+    const t = tombs.get(`prod:${p.id}`);
+    if (t && t.deletedAt >= (p.updatedAt || 0)) continue;
+    const cur = localProd.get(p.id);
+    if (!cur || (p.updatedAt || 0) > (cur.updatedAt || 0)) { writes.push(['products', 'put', p]); res.products = (res.products || 0) + 1; }
+  }
+  const localMoves = new Set(local.moves.map((m) => m.uid));
+  for (const m of inc.moves || []) {
+    if (!m.uid || localMoves.has(m.uid) || tombs.has(m.uid)) continue;
+    writes.push(['moves', 'put', m]); res.moves = (res.moves || 0) + 1;
+  }
+  for (const t of tombs.values()) {
+    if (t.store === 'products' && localProd.has(t.uid.slice(5)) && (localProd.get(t.uid.slice(5)).updatedAt || 0) <= t.deletedAt) writes.push(['products', 'delete', t.uid.slice(5)]);
+    if (t.store === 'moves' && localMoves.has(t.uid)) writes.push(['moves', 'delete', t.uid]);
+  }
   const staffNames = new Set(local.staff.map((s) => s.name));
   for (const s of inc.staff || []) if (!staffNames.has(s.name)) writes.push(['staff', 'put', s]);
   for (const t of tombs.values()) writes.push(['deleted', 'put', t]);
 
-  await db.transaction(['visits', 'expenses', 'days', 'categories', 'staff', 'deleted', 'clients'], (tx) => {
+  await db.transaction(['visits', 'expenses', 'days', 'categories', 'staff', 'deleted', 'clients', 'products', 'moves'], (tx) => {
     for (const [store, op, v] of writes) {
       if (op === 'put') tx.objectStore(store).put(v);
       else tx.objectStore(store).delete(v);

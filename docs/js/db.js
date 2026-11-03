@@ -3,7 +3,7 @@
 // λάθη στρογγυλοποίησης στα σύνολα και στο CSV.
 
 const DB_NAME = 'salon';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export const newUid = () => (crypto.randomUUID ? crypto.randomUUID()
   : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`);
@@ -52,6 +52,16 @@ export function openDB() {
         tx.objectStore('expenses').createIndex('uid', 'uid', { unique: true });
         // Διαγραφές: { uid, store, date, deletedAt } — για να σβήνονται και στην άλλη συσκευή.
         db.createObjectStore('deleted', { keyPath: 'uid' });
+      }
+      if (e.oldVersion < 3) {
+        // v3: αποθήκη. Προϊόντα { id, name, kind:'retail'|'use'|'both', code, size, cost, price, min, updatedAt }
+        // και κινήσεις { uid, productId, date, at, type:'receive'|'use'|'count', qty, cost, note, dev, updatedAt }.
+        // (Οι πωλήσεις έρχονται από τη μεταπώληση του Ταμείου, όχι από εδώ.)
+        const prod = db.createObjectStore('products', { keyPath: 'id' });
+        prod.createIndex('name', 'name');
+        const mv = db.createObjectStore('moves', { keyPath: 'uid' });
+        mv.createIndex('productId', 'productId');
+        mv.createIndex('date', 'date');
       }
     };
     req.onsuccess = () => {
