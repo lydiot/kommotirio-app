@@ -631,6 +631,16 @@ function usageCard(per) {
     x.qty += m.qty; if (p?.cost != null) x.cost += p.cost * m.qty; else x.known = false;
     g.set(name, x);
   }
+  for (const d of D.days) {
+    if (!inR(d.date, per)) continue;
+    for (const it of d.useItems || []) {
+      const p = (it.productId && D.prodById.get(it.productId)) || D.prodByName.get(norm(it.product.replace(/\s+/g, ' ').trim()));
+      const name = p?.name || it.product;
+      const x = g.get(name) || { name, qty: 0, cost: 0, known: true };
+      x.qty += it.qty || 1; if (p?.cost != null) x.cost += p.cost * (it.qty || 1); else x.known = false;
+      g.set(name, x);
+    }
+  }
   const rows = [...g.values()].sort((x, y) => y.qty - x.qty);
   if (!rows.length) return '';
   return `<section class="rcard wide" style="margin-top:14px"><h3>Αναλώσιμα που χρησιμοποιήθηκαν</h3>

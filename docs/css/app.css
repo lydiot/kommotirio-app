@@ -473,3 +473,8 @@ html.booting .cover, html.covered .cover { display: block; }
 .rcv-row .input { padding: 0 8px; font-size: 16px; min-height: 50px; }
 .rcv-row .money { gap: 2px; }
 .call-card.order { margin-top: 12px; }
+
+.use-row { display: grid; grid-template-columns: 1fr 64px 30px; gap: 6px; align-items: center; margin-bottom: 8px; }
+.use-row .input { min-height: 52px; }
+.use-row [data-use=product] { font-size: 17px; padding: 0 10px; }
+.use-row [data-use=qty] { text-align: center; padding: 0 6px; }

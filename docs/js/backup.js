@@ -62,6 +62,7 @@ export async function buildCSV(dates = null) {
     es.sort((a, b) => a.createdAt - b.createdAt).forEach((e) => rows.push([D, 'Έξοδο', '', '', '', e.desc, csvMoney(e.amount)]));
     if (day?.posTotal != null) rows.push([D, 'POS σύνολο', '', '', '', '', csvMoney(day.posTotal)]);
     (day?.posParts || []).forEach((p, i) => rows.push([D, 'POS συναλλαγή', i + 1, '', '', '', csvMoney(p)]));
+    (day?.useItems || []).forEach((it, i) => rows.push([D, 'Αναλώσιμο', i + 1, '', '', `${it.product} × ${it.qty || 1}`, '']));
     if (day?.vat != null) rows.push([D, 'ΦΠΑ', '', '', '', '', csvMoney(day.vat)]);
   }
   return '﻿' + rows.map((r) => r.map(csvCell).join(';')).join('\r\n') + '\r\n';
