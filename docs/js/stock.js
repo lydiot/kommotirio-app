@@ -21,7 +21,22 @@ const fDate = (date) => { const [y, m, d] = date.split('-').map(Number); return 
 // ---------------------------------------------------------------- υπολογισμός
 let CACHE = null;
 export async function loadStock() {
-  const [products, moves, days] = await Promise.all([db.getAll('products'), db.getAll('moves'), db.getAll('days')]);
+  const [products0, moves, days] = await Promise.all([db.getAll('products'), db.getAll('moves'), db.getAll('days')]);
+  // Ονόματα από μεταπώληση/αναλώσιμα που δεν έγιναν ποτέ προϊόν (π.χ. γράφτηκαν πριν την αποθήκη) → δημιουργούνται τώρα.
+  const products = [...products0];
+  const known = new Set(products.map((p) => normKey(p.name)));
+  const missing = [];
+  for (const d of days) {
+    for (const [list, kind] of [[d.retailItems, 'retail'], [d.useItems, 'use']]) {
+      for (const it of list || []) {
+        const k = normKey(it.product);
+        if (!k || known.has(k)) continue;
+        known.add(k);
+        missing.push({ id: db.newUid(), name: it.product, kind, code: '', size: '', cost: null, price: kind === 'retail' ? it.amount : null, min: 1, updatedAt: Date.now() });
+      }
+    }
+  }
+  if (missing.length) { await db.transaction(['products'], (tx) => missing.forEach((p) => tx.objectStore('products').put(p))); products.push(...missing); }
   const byId = new Map(products.map((p) => [p.id, { ...p, stock: 0, known: false, events: [] }]));
   const byName = new Map(products.map((p) => [normKey(p.name), p.id]));
   const ev = [];
@@ -128,6 +143,7 @@ export async function renderStockTab(el) {
         <button class="st-main" data-act="st-open" data-id="${p.id}">
           <div class="title">${esc(p.name)}</div>
           <div class="sub">${KIND[p.kind] || ''}${p.size ? ` · ${esc(p.size)}` : ''}${p.code ? ` · ${esc(p.code)}` : ''}</div>
+          ${!p.known && p.events.length ? `<div class="sub st-act">${activity(p)} · χωρίς καταμέτρηση</div>` : ''}
         </button>
         <span class="st-qty ${isLow(p) ? 'low' : ''}" title="Απόθεμα">${p.known ? p.stock : '?'}</span>
       </div>`).join('') || `<div class="empty">${list.length ? 'Κανένα προϊόν με αυτά τα φίλτρα.' : 'Δεν υπάρχουν ακόμα προϊόντα. Πάτα «＋ Νέο προϊόν» ή κάνε εισαγωγή καταλόγου (⚙︎ → Εισαγωγή αρχείου). Τα προϊόντα που γράφονται στη μεταπώληση μπαίνουν αυτόματα.'}</div>`}
@@ -156,6 +172,12 @@ export async function renderStockTab(el) {
       el._t = setTimeout(() => renderStockTab(el).then(() => { const i = el.querySelector('[data-st=q]'); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }), 200);
     }
   };
+}
+
+// «2 πωλήσεις · 3 χρήσεις» — για προϊόντα χωρίς καταμέτρηση, ώστε να φαίνεται η κίνηση.
+function activity(p) {
+  const sold = p.events.filter((e) => e.type === 'sale').length, used = p.events.filter((e) => e.type === 'use').reduce((a, e) => a + e.qty, 0);
+  return [sold && `${sold} ${sold === 1 ? 'πώληση' : 'πωλήσεις'}`, used && `${used} ${used === 1 ? 'χρήση' : 'χρήσεις'}`].filter(Boolean).join(' · ');
 }
 
 async function afterChange(el, pid, msg) {

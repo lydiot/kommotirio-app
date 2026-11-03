@@ -478,3 +478,4 @@ html.booting .cover, html.covered .cover { display: block; }
 .use-row .input { min-height: 52px; }
 .use-row [data-use=product] { font-size: 17px; padding: 0 10px; }
 .use-row [data-use=qty] { text-align: center; padding: 0 6px; }
+.st-act { color: var(--accent) !important; font-weight: 600; }
