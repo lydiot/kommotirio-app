@@ -1,6 +1,6 @@
 // Service worker: κρατά αντίγραφο της εφαρμογής στη συσκευή για χρήση offline.
 // Σε κάθε αλλαγή αρχείων ανεβάζουμε το VERSION, ώστε να κατέβει η νέα έκδοση.
-const VERSION = 'v3.2.1';
+const VERSION = 'v3.3.1';
 const CACHE = `salon-${VERSION}`;
 const ASSETS = [
   './',
@@ -14,6 +14,7 @@ const ASSETS = [
   'js/results.js',
   'js/lock.js',
   'js/stock.js',
+  'js/invoice.js',
   'data/seed.json',
   'icons/apple-touch-icon.png',
   'icons/icon-192.png',

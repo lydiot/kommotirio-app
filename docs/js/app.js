@@ -5,7 +5,7 @@ import { renderResults, overdueClients } from './results.js';
 import * as lock from './lock.js';
 import * as stock from './stock.js';
 
-const APP_VERSION = '3.2.1';
+const APP_VERSION = '3.3.1';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -388,8 +388,8 @@ function posRowHtml(value, i, disabled) {
 
 function retailRowHtml(it, disabled) {
   // data-at: ώρα πώλησης· «legacy» = παλιά γραμμή χωρίς ώρα (κρατά την αρχή της μέρας της).
-  return `<div class="retail-row" data-at="${it ? (it.at || 'legacy') : ''}" data-pid="${it?.productId || ''}">
-    <input class="input" data-retail="product" list="product-list" autocapitalize="sentences" autocomplete="off"
+  return `<div class="retail-row" data-pk-row data-at="${it ? (it.at || 'legacy') : ''}" data-pid="${it?.productId || ''}">
+    <input class="input" data-retail="product" data-pk="retail" autocapitalize="sentences" autocomplete="off"
       placeholder="Προϊόν" value="${esc(it?.product || '')}" ${disabled ? 'disabled' : ''}>
     <span class="money"><input class="input" inputmode="decimal" data-retail="amount" value="${toInput(it?.amount ?? null)}" placeholder="0" ${disabled ? 'disabled' : ''}><span class="cur">€</span></span>
     ${disabled ? '' : '<button class="item-x" data-act="retail-rm" aria-label="Αφαίρεση προϊόντος">✕</button>'}
@@ -407,8 +407,8 @@ function entryTime() {
 
 // Αναλώσιμα ημέρας: γραμμές προϊόν + ποσότητα, αποθηκευμένες στην ημέρα (day.useItems).
 function useRowHtml(it, disabled) {
-  return `<div class="use-row" data-at="${it?.at || ''}">
-    <input class="input" data-use="product" list="use-list" autocapitalize="sentences" autocomplete="off"
+  return `<div class="use-row" data-pk-row data-at="${it?.at || ''}">
+    <input class="input" data-use="product" data-pk="use" autocapitalize="sentences" autocomplete="off"
       placeholder="Αναλώσιμο" value="${esc(it?.product || '')}" ${disabled ? 'disabled' : ''}>
     <input class="input" data-use="qty" inputmode="numeric" value="${it?.qty ?? ''}" placeholder="1" ${disabled ? 'disabled' : ''}>
     ${disabled ? '' : '<button class="item-x" data-act="use-rm" aria-label="Αφαίρεση">✕</button>'}
@@ -433,14 +433,12 @@ function renderTill() {
       <div id="retail-items">${(() => { const it = retailItemsOf(d); return (it.length || L ? it : [null]).map((x) => retailRowHtml(x, L)).join('') || '<p class="note">Καμία πώληση.</p>'; })()}</div>
       ${L ? '' : '<button class="btn" data-act="retail-add" style="margin-top:4px">＋ Προϊόν</button>'}
       <div id="retail-sum" class="note" style="margin:10px 4px 0"></div>
-      <datalist id="product-list">${[...new Set([...stock.productNames(), ...S.products])].map((p) => `<option value="${esc(p)}"></option>`).join('')}</datalist>
     </div>
     <h2>Αναλώσιμα ημέρας</h2>
     <div class="card">
       <div id="use-items">${(() => { const it = S.day.useItems || []; return (it.length || L ? it : [null]).map((x) => useRowHtml(x, L)).join('') || '<p class="note">Κανένα.</p>'; })()}</div>
       ${L ? '' : '<button class="btn" data-act="use-add" style="margin-top:4px">＋ Αναλώσιμο</button>'}
       <p class="note" style="margin:10px 4px 0">Ό,τι άνοιξε ή χρησιμοποιήθηκε σήμερα (βαφές, οξυζενέ…). Αφαιρείται από την αποθήκη.</p>
-      <datalist id="use-list">${stock.productNames('use').map((p) => `<option value="${esc(p)}"></option>`).join('')}</datalist>
     </div>
     <h2>ΦΠΑ</h2>
     <div class="card">
@@ -964,7 +962,7 @@ async function importFromFile(file) {
     await loadStatic();
     await refreshDay();
     if (res.kind === 'clients') toast(`Πελατολόγιο: προστέθηκαν ${res.clientsAdded} ονόματα`);
-    else if (res.kind === 'products') toast(`Κατάλογος: προστέθηκαν ${res.productsAdded} προϊόντα στην αποθήκη`);
+    else if (res.kind === 'products') toast(`Κατάλογος: ${res.productsAdded} νέα, ${res.productsUpdated} ενημερώθηκαν${res.priceChanges ? `, άλλαξαν οι τιμές σε ${res.priceChanges}` : ''}`);
     else toast(`Εισαγωγή: ${res.added} νέα, ${res.updated} ενημερώσεις, ${res.deleted} διαγραφές, ${res.days} ημέρες ταμείου`);
     return true;
   } catch (err) {

@@ -6,6 +6,7 @@
 //   Πληρωμές χωρίς κάρτα (εκτίμηση) = επισκέψεις − γραμμές POS, σε ημέρες με γραμμές POS.
 
 import * as db from './db.js';
+import { loadStock, saleCost, useCost, moveCost } from './stock.js';
 
 // ---------------------------------------------------------------- βοηθητικά
 const MONTHS = ['Ιαν', 'Φεβ', 'Μαρ', 'Απρ', 'Μάι', 'Ιουν', 'Ιουλ', 'Αυγ', 'Σεπ', 'Οκτ', 'Νοε', 'Δεκ'];
@@ -80,6 +81,7 @@ async function load() {
   const [visits, days, expenses, staff, clients] = await Promise.all(['visits', 'days', 'expenses', 'staff', 'clients'].map((s) => db.getAll(s)));
   const phones = new Map(clients.filter((c) => c.phone).map((c) => [c.name, c.phone]));
   const fixed = ((await db.getMeta('fixedCosts')) || { items: [] }).items;
+  await loadStock(); // υπολογίζει τα κόστη κάθε πώλησης/χρήσης όπως ίσχυαν τη στιγμή της κίνησης
   const [products, moves] = await Promise.all([db.getAll('products'), db.getAll('moves')]);
   const prodById = new Map(products.map((p) => [p.id, p]));
   const prodByName = new Map(products.map((p) => [norm(p.name.replace(/\s+/g, ' ').trim()), p]));
@@ -599,10 +601,10 @@ function retailCard(a) {
     const items = d.retailItems || (d.retail != null ? [{ product: '', amount: d.retail }] : []);
     for (const it of items) {
       const name = it.product || '(χωρίς όνομα)', k = norm(name);
-      const prod = (it.productId && D.prodById.get(it.productId)) || D.prodByName.get(norm(name.replace(/\s+/g, ' ').trim()));
+      const c = it.product ? saleCost(d.date, it) : null;   // κόστος τη στιγμή της πώλησης (σταθμισμένος μέσος όρος παραλαβών)
       const x = g.get(k) || { name, count: 0, amount: 0, cost: 0, costKnown: 0 };
       x.count++; x.amount += it.amount;
-      if (prod?.cost != null) { x.cost += prod.cost; x.costKnown++; }
+      if (c != null) { x.cost += c; x.costKnown++; }
       g.set(k, x);
     }
   }
@@ -613,7 +615,7 @@ function retailCard(a) {
   const allKnown = rows.every((r) => r.costKnown === r.count);
   return `<section class="rcard wide" style="margin-top:14px"><h3>Μεταπώληση — προϊόντα (${fmt(a.retail)})</h3>
     ${hbars(rows.map((r) => ({ label: r.name, value: r.amount, extra: `${r.count}×` })))}
-    ${anyCost ? `<p class="note"><b>Κέρδος μεταπώλησης${allKnown ? '' : ' (όπου υπάρχει τιμή αγοράς)'}: ${fmtS((allKnown ? a.retail : tAmtKnown) - tCost)}</b> · κόστος ${fmt(tCost)}</p>` : '<p class="note">Βάλε <b>τιμή αγοράς</b> στα προϊόντα (Αποθήκη) για να φαίνεται και το κέρδος της μεταπώλησης.</p>'}
+    ${anyCost ? `<p class="note"><b>Κέρδος μεταπώλησης${allKnown ? '' : ' (όπου υπάρχει κόστος)'}: ${fmtS((allKnown ? a.retail : tAmtKnown) - tCost)}</b> · κόστος ${fmt(tCost)} — υπολογισμένο με την τιμή αγοράς της εποχής της κάθε πώλησης.</p>` : '<p class="note">Το κέρδος της μεταπώλησης φαίνεται μόλις καταχωρηθεί <b>τιμολόγιο παραλαβής</b> (Αποθήκη) για τα προϊόντα που πουλήθηκαν.</p>'}
     <div class="tscroll"><table class="rtable"><thead><tr><th class="txt">Προϊόν</th><th>Πωλήσεις</th><th>Ποσό</th><th>Μέση τιμή</th>${anyCost ? '<th>Κόστος</th><th>Κέρδος</th>' : ''}<th>Μερίδιο</th></tr></thead>
     <tbody>${rows.map((r) => `<tr><th class="txt">${esc(r.name)}</th><td>${r.count}</td><td>${fmt(r.amount)}</td><td>${fmt(r.amount / r.count)}</td>
       ${anyCost ? (r.costKnown === r.count ? `<td>${fmt(r.cost)}</td><td>${fmtS(r.amount - r.cost)}</td>` : '<td>—</td><td>—</td>') : ''}<td>${pct(r.amount, a.retail)}</td></tr>`).join('')}</tbody></table></div>
@@ -628,7 +630,8 @@ function usageCard(per) {
     if (m.type !== 'use' || !inR(m.date, per)) continue;
     const p = D.prodById.get(m.productId); const name = p?.name || '(διαγραμμένο προϊόν)';
     const x = g.get(name) || { name, qty: 0, cost: 0, known: true };
-    x.qty += m.qty; if (p?.cost != null) x.cost += p.cost * m.qty; else x.known = false;
+    const c = moveCost(m.uid);
+    x.qty += m.qty; if (c != null) x.cost += c * m.qty; else x.known = false;
     g.set(name, x);
   }
   for (const d of D.days) {
@@ -637,7 +640,8 @@ function usageCard(per) {
       const p = (it.productId && D.prodById.get(it.productId)) || D.prodByName.get(norm(it.product.replace(/\s+/g, ' ').trim()));
       const name = p?.name || it.product;
       const x = g.get(name) || { name, qty: 0, cost: 0, known: true };
-      x.qty += it.qty || 1; if (p?.cost != null) x.cost += p.cost * (it.qty || 1); else x.known = false;
+      const c = useCost(d.date, it);
+      x.qty += it.qty || 1; if (c != null) x.cost += c * (it.qty || 1); else x.known = false;
       g.set(name, x);
     }
   }
@@ -645,7 +649,7 @@ function usageCard(per) {
   if (!rows.length) return '';
   return `<section class="rcard wide" style="margin-top:14px"><h3>Αναλώσιμα που χρησιμοποιήθηκαν</h3>
     ${hbars(rows.map((r) => ({ label: r.name, value: r.qty })), (v) => `${v} τεμ.`, 's2f')}
-    <p class="note">Κόστος αναλωσίμων (όπου υπάρχει τιμή αγοράς): <b>${fmt(sum(rows.map((r) => r.cost)))}</b>. Ενημερωτικό — δεν αφαιρείται από το κέρδος,
+    <p class="note">Κόστος αναλωσίμων (με την τιμή αγοράς της εποχής, όπου υπάρχει): <b>${fmt(sum(rows.map((r) => r.cost)))}</b>. Ενημερωτικό — δεν αφαιρείται από το κέρδος,
       γιατί οι αγορές καταγράφονται ήδη στα έξοδα.</p>
   </section>`;
 }

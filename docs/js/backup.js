@@ -91,20 +91,36 @@ export async function importText(text) {
   let obj;
   try { obj = JSON.parse(text.replace(/^﻿/, '')); } catch { throw new Error('Το αρχείο δεν είναι αρχείο backup της εφαρμογής.'); }
 
-  // Κατάλογος προϊόντων: { "products": [ { name, code?, size?, price?, cost?, kind? } ] } — προσθέτει όσα λείπουν.
+  // Κατάλογος προϊόντων προμηθευτή: { "products": [ { name, code, ean, size, group, kind, listCost, price? } ] }.
+  // Αντιστοίχιση με υπάρχοντα προϊόντα: κωδικός → barcode → όνομα. Νέα προϊόντα παίρνουν σταθερό id από τον κωδικό
+  // (έτσι δύο συσκευές που εισάγουν τον ίδιο κατάλογο δεν δημιουργούν διπλά). Σε ήδη υπάρχοντα ενημερώνεται μόνο η τιμή
+  // καταλόγου και συμπληρώνονται στοιχεία που λείπουν· το απόθεμα, το είδος και το όνομα ΔΕΝ πειράζονται.
   if (obj && obj.app !== BACKUP_APP && Array.isArray(obj.products)) {
-    const have = new Set((await db.getAll('products')).map((p) => normKey(p.name)));
-    const now = Date.now(), add = [];
-    for (const p of obj.products) {
-      const name = cleanName(p.name);
-      if (!name || have.has(normKey(name))) continue;
-      have.add(normKey(name));
-      const toC = (v) => (v == null || v === '' ? null : Math.round(Number(String(v).replace(',', '.')) * 100));
-      add.push({ id: db.newUid(), name, kind: ['retail', 'use', 'both'].includes(p.kind) ? p.kind : 'both',
-        code: p.code || '', size: p.size || '', price: toC(p.price), cost: toC(p.cost), min: 1, updatedAt: now });
+    const local = await db.getAll('products');
+    const byCode = new Map(local.filter((p) => p.code).map((p) => [String(p.code), p]));
+    const byEan = new Map(local.filter((p) => p.ean).map((p) => [String(p.ean), p]));
+    const byNm = new Map(local.map((p) => [normKey(p.name), p]));
+    const toC = (v) => (v == null || v === '' ? null : Math.round(Number(String(v).replace(',', '.')) * 100));
+    const now = Date.now(), writes = [], r = { kind: 'products', productsAdded: 0, productsUpdated: 0, priceChanges: 0 };
+    for (const it of obj.products) {
+      const name = cleanName(it.name); if (!name) continue;
+      const code = String(it.code || '').trim(), ean = String(it.ean || '').trim();
+      const listCost = toC(it.listCost ?? it.cost);
+      const cur = (code && byCode.get(code)) || (ean && byEan.get(ean)) || byNm.get(normKey(name));
+      if (!cur) {
+        const p = { id: code ? `lp:${code}` : db.newUid(), name, supplierName: it.supplierName || '', code, ean, size: it.size || '', group: it.group || '',
+          kind: ['retail', 'use', 'both'].includes(it.kind) ? it.kind : 'both', listCost, cost: null, price: toC(it.price), min: 1, updatedAt: now };
+        writes.push(p); r.productsAdded++;
+        if (code) byCode.set(code, p); byNm.set(normKey(name), p);
+      } else {
+        const patch = {};
+        for (const k of ['code', 'ean', 'size', 'group', 'supplierName']) { const v = k === 'code' ? code : k === 'ean' ? ean : (it[k] || ''); if (v && !cur[k]) patch[k] = v; }
+        if (listCost != null && listCost !== cur.listCost) { patch.listCost = listCost; if (cur.listCost != null) r.priceChanges++; }
+        if (Object.keys(patch).length) { writes.push({ ...cur, ...patch, updatedAt: now }); r.productsUpdated++; }
+      }
     }
-    if (add.length) await db.transaction(['products'], (tx) => add.forEach((p) => tx.objectStore('products').put(p)));
-    return { kind: 'products', productsAdded: add.length };
+    if (writes.length) await db.transaction(['products'], (tx) => writes.forEach((p) => tx.objectStore('products').put(p)));
+    return r;
   }
   // Σκέτο πελατολόγιο (π.χ. το αρχικό seed.json με "clients": [...]).
   if (obj && obj.app !== BACKUP_APP && Array.isArray(obj.clients)) {
@@ -117,6 +133,14 @@ export async function importText(text) {
   const local = {};
   for (const s of DATA_STORES) local[s] = await db.getAll(s);
 
+  const localProd = new Map(local.products.map((p) => [p.id, p]));
+  const localByName = new Map(local.products.map((p) => [normKey(p.name), p.id]));
+  const remap = new Map(); // εισερχόμενο id → τοπικό id, όταν το ίδιο προϊόν υπάρχει ήδη με άλλο id
+  for (const p of inc.products || []) {
+    const lid = localByName.get(normKey(p.name));
+    if (lid && lid !== p.id && !localProd.has(p.id)) remap.set(p.id, lid);
+  }
+  const rid = (id) => remap.get(id) || id;
   const res = { kind: 'backup', added: 0, updated: 0, deleted: 0, days: 0, clientsAdded: 0 };
   const tombs = new Map(local.deleted.map((t) => [t.uid, t]));
   for (const t of inc.deleted || []) {
@@ -145,7 +169,10 @@ export async function importText(text) {
   const localDays = new Map(local.days.map((d) => [d.date, d]));
   for (const d of inc.days || []) {
     const cur = localDays.get(d.date);
-    if (!cur || (d.updatedAt || 0) > (cur.updatedAt || 0)) { writes.push(['days', 'put', d]); res.days++; }
+    if (!cur || (d.updatedAt || 0) > (cur.updatedAt || 0)) {
+      const fix = (l) => (l ? l.map((it) => (it.productId && remap.has(it.productId) ? { ...it, productId: rid(it.productId) } : it)) : l);
+      writes.push(['days', 'put', { ...d, ...(d.retailItems ? { retailItems: fix(d.retailItems) } : {}), ...(d.useItems ? { useItems: fix(d.useItems) } : {}) }]); res.days++;
+    }
   }
   // Τιμοκατάλογος: κρατιέται η νεότερη εκδοχή· διαγραφές με ίχνος «cat:όνομα».
   const localCats = new Map(local.categories.map((c) => [c.name, c]));
@@ -167,8 +194,8 @@ export async function importText(text) {
     }
   }
   // Αποθήκη: προϊόντα (νεότερη εκδοχή, ίχνος «prod:id») και κινήσεις (ανά uid, ίχνος uid).
-  const localProd = new Map(local.products.map((p) => [p.id, p]));
-  for (const p of inc.products || []) {
+  // (η αντιστοίχιση προϊόντων έχει οριστεί νωρίτερα: localProd, remap, rid)
+  for (const p of (inc.products || []).filter((x) => !remap.has(x.id))) {
     const t = tombs.get(`prod:${p.id}`);
     if (t && t.deletedAt >= (p.updatedAt || 0)) continue;
     const cur = localProd.get(p.id);
@@ -177,7 +204,7 @@ export async function importText(text) {
   const localMoves = new Set(local.moves.map((m) => m.uid));
   for (const m of inc.moves || []) {
     if (!m.uid || localMoves.has(m.uid) || tombs.has(m.uid)) continue;
-    writes.push(['moves', 'put', m]); res.moves = (res.moves || 0) + 1;
+    writes.push(['moves', 'put', { ...m, productId: rid(m.productId) }]); res.moves = (res.moves || 0) + 1;
   }
   for (const t of tombs.values()) {
     if (t.store === 'products' && localProd.has(t.uid.slice(5)) && (localProd.get(t.uid.slice(5)).updatedAt || 0) <= t.deletedAt) writes.push(['products', 'delete', t.uid.slice(5)]);
