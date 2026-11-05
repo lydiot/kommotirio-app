@@ -5,7 +5,7 @@ import { renderResults, overdueClients } from './results.js';
 import * as lock from './lock.js';
 import * as stock from './stock.js';
 
-const APP_VERSION = '3.3.1';
+const APP_VERSION = '3.4.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά

@@ -11,6 +11,37 @@ import { helpers, loadStock, getCache, normKey, fDate, afterChange, autoId } fro
 
 let S = null; // ενεργή παραλαβή: { el, lineHtml, updateLine, updateTotals }
 
+// «LP Majirel CB 6.23 60ml R25 V522» → «Majirel CB 6.23 60ml» (αφαιρούνται το πρόθεμα LP και οι κωδικοί παρτίδας).
+export function cleanSupplierName(n) {
+  return String(n || '').replace(/^\s*LP\s+/i, '').replace(/\bV[A-Z]?\d{2,3}\b/g, '').replace(/\bR\d{2}\b/g, '').replace(/\s+/g, ' ').trim();
+}
+
+// Διαβάζει επικολλημένο πίνακα από email: EAN, Κωδικός, Ποσότητα («6 UN»), Περιγραφή (σε οποιαδήποτε σειρά στηλών).
+// Γραμμές χωρίς ποσότητα (επικεφαλίδες, κενά) αγνοούνται.
+export function parsePaste(text) {
+  const rows = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim(); if (!line) continue;
+    let cells = raw.split('\t').map((c) => c.trim()).filter(Boolean);
+    if (cells.length < 3) cells = line.split(/\s{2,}/).map((c) => c.trim()).filter(Boolean);
+    let ean = '', code = '', qty = NaN; const rest = [];
+    if (cells.length < 3) {
+      const m = line.match(/^(\d{8,14})\s+([A-Za-z]{1,4}\d{4,9})\s+(\d{1,5})\s*(?:UN|ΤΕΜ|TEM|PCS)?\s+(.+)$/i);
+      if (m) { ean = m[1]; code = m[2].toUpperCase(); qty = parseInt(m[3], 10); rest.push(m[4]); }
+    } else {
+      for (const c of cells) {
+        if (!ean && /^\d{8,14}$/.test(c)) ean = c;
+        else if (!code && /^[A-Za-z]{1,4}\d{4,9}$/.test(c)) code = c.toUpperCase();
+        else if (Number.isNaN(qty) && /^\d{1,5}(?:[.,]\d+)?\s*(?:UN|ΤΕΜ\.?|TEM|PCS|ΤΜΧ)?$/i.test(c)) qty = parseInt(c, 10);
+        else rest.push(c);
+      }
+    }
+    if (Number.isNaN(qty) || qty <= 0 || (!code && !ean && !rest.length)) continue;
+    rows.push({ ean, code, qty, desc: rest.join(' ') });
+  }
+  return rows;
+}
+
 const parsePct = (s) => { const v = parseFloat(String(s ?? '').replace(',', '.')); return Number.isFinite(v) ? v : 0; };
 
 document.addEventListener('pkpick', (e) => {
@@ -25,13 +56,13 @@ export async function openInvoice(el, { product = null } = {}) {
   const cache = getCache();
   const supplier0 = (await db.getMeta('lastSupplier')) || 'L\'Oréal';
 
-  const lineHtml = (P) => `<div class="inv-line" ${P ? `data-pid="${P.id}"` : ''}>
+  const lineHtml = (P, x = {}) => `<div class="inv-line" ${P ? `data-pid="${P.id}"` : ''} ${x.meta ? `data-code="${esc(x.meta.code)}" data-ean="${esc(x.meta.ean)}" data-sup="${esc(x.meta.sup)}"` : ''}>
     <div class="inv-top" data-pk-row>
-      <input class="input" data-i="name" data-pk="any" placeholder="Προϊόν: όνομα, κωδικός ή barcode" autocomplete="off" autocapitalize="sentences" value="${esc(P?.name || '')}">
+      <input class="input" data-i="name" data-pk="any" placeholder="Προϊόν: όνομα, κωδικός ή barcode" autocomplete="off" autocapitalize="sentences" value="${esc(P?.name || x.name || '')}">
       <button class="item-x" data-act="inv-rm" aria-label="Αφαίρεση γραμμής">✕</button>
     </div>
     <div class="inv-nums">
-      <label><span>Τεμ.</span><input class="input" data-i="qty" inputmode="numeric" placeholder="1"></label>
+      <label><span>Τεμ.</span><input class="input" data-i="qty" inputmode="numeric" placeholder="1" value="${x.qty ?? ''}"></label>
       <label><span>Τιμή (χωρίς ΦΠΑ)</span><span class="money"><input class="input" data-i="price" inputmode="decimal" placeholder="0" value="${P ? toInput(P.lastList ?? P.listCost ?? null) : ''}"><span class="cur">€</span></span></label>
       <label><span>Έκπτωση</span><span class="money"><input class="input" data-i="disc" inputmode="decimal" placeholder="0"><span class="cur">%</span></span></label>
     </div>
@@ -114,6 +145,13 @@ export async function openInvoice(el, { product = null } = {}) {
         <label class="field"><span class="lbl">Έκπτωση σε όλες τις γραμμές</span><span class="money"><input class="input" id="inv-disc" inputmode="decimal" placeholder="0"><span class="cur">%</span></span></label>
       </div>
       <h2>Γραμμές</h2>
+      <button class="btn" data-act="inv-paste" style="margin-bottom:10px">📋 Επικόλληση από email</button>
+      <div id="inv-paste-box" class="card" hidden style="margin-bottom:12px">
+        <p class="note" style="margin:0 0 8px">Αντίγραψε τον πίνακα από το email (στήλες: EAN, Κωδικός, Ποσότητα, Περιγραφή) και επικόλλησέ τον εδώ.</p>
+        <textarea class="input" id="inv-paste" rows="6" style="min-height:120px;padding:10px" placeholder="Επικόλληση…"></textarea>
+        <button class="btn primary" data-act="inv-paste-go" style="margin-top:8px">Ανάγνωση γραμμών</button>
+        <div id="inv-paste-res" class="note"></div>
+      </div>
       <div id="inv-lines">${lineHtml(product)}${product ? '' : lineHtml() + lineHtml()}</div>
       <button class="btn" data-act="inv-add">＋ Γραμμή</button>`,
     foot: `<div id="inv-foot-sum"></div><button class="btn primary big" data-act="inv-save">Καταχώρηση</button>`,
@@ -136,10 +174,42 @@ export async function openInvoice(el, { product = null } = {}) {
         return;
       }
       if (act === 'inv-rm') { b.closest('.inv-line').remove(); updateTotals(); return; }
+      if (act === 'inv-paste') { const bx = document.getElementById('inv-paste-box'); bx.hidden = !bx.hidden; if (!bx.hidden) document.getElementById('inv-paste').focus(); return; }
+      if (act === 'inv-paste-go') return importPaste();
       if (act !== 'inv-save') return;
       await save();
     },
   });
+  function importPaste() {
+    const rows = parsePaste(document.getElementById('inv-paste').value);
+    const res = document.getElementById('inv-paste-res');
+    if (!rows.length) { res.innerHTML = '<span class="bad">Δεν βρέθηκαν γραμμές με ποσότητα. Έλεγξε ότι αντέγραψες τον πίνακα.</span>'; return; }
+    const byCode = new Map(cache.list.filter((p) => p.code).map((p) => [p.code.toUpperCase(), p]));
+    const byEan = new Map(cache.list.filter((p) => p.ean).map((p) => [String(p.ean), p]));
+    const merged = new Map();
+    for (const r of rows) {
+      const P = byCode.get(r.code) || byEan.get(r.ean) || cache.byId.get(cache.byName.get(normKey(cleanSupplierName(r.desc)))) || null;
+      const k = P ? P.id : (r.code || r.ean || normKey(r.desc));
+      const g = merged.get(k) || { P, r, qty: 0, lines: 0 };
+      g.qty += r.qty; g.lines++; merged.set(k, g);
+    }
+    const box = document.getElementById('inv-lines');
+    box.querySelectorAll('.inv-line').forEach((l) => { if (!l.querySelector('[data-i=name]').value.trim() && !l.querySelector('[data-i=qty]').value.trim()) l.remove(); });
+    const disc = document.getElementById('inv-disc').value;
+    let found = 0, fresh = 0, pieces = 0, same = 0;
+    for (const g of merged.values()) {
+      pieces += g.qty; same += g.lines - 1;
+      if (g.P) { found++; box.insertAdjacentHTML('beforeend', lineHtml(g.P, { qty: g.qty })); }
+      else { fresh++; box.insertAdjacentHTML('beforeend', lineHtml(null, { qty: g.qty, name: cleanSupplierName(g.r.desc), meta: { code: g.r.code, ean: g.r.ean, sup: g.r.desc } })); }
+      if (disc) box.lastElementChild.querySelector('[data-i=disc]').value = disc;
+    }
+    box.querySelectorAll('.inv-line').forEach(updateLine);
+    updateTotals();
+    res.innerHTML = `<b>${merged.size} προϊόντα, ${pieces} τεμάχια.</b> ${found} βρέθηκαν στον κατάλογο${fresh ? `, <span class="warn-t">${fresh} νέα (θα δημιουργηθούν με τον κωδικό τους)</span>` : ''}${same ? ` · ${same === 1 ? 'ενώθηκε 1 επαναλαμβανόμενη γραμμή' : `ενώθηκαν ${same} επαναλαμβανόμενες γραμμές`}` : ''}.
+      Το email δεν έχει τιμές: μπήκαν οι τιμές καταλόγου — διόρθωσέ τις όπου διαφέρουν και γράψε τις τιμές στα νέα προϊόντα.`;
+    document.getElementById('inv-paste-box').hidden = false;
+    box.firstElementChild?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
   if (product) { const l = document.querySelector('#inv-lines .inv-line'); l.querySelector('[data-i=qty]').focus(); }
   updateTotals();
 
@@ -157,7 +227,7 @@ export async function openInvoice(el, { product = null } = {}) {
       if (!Number.isFinite(r.qty) || r.qty <= 0) return H.toast(`Λείπουν τα τεμάχια: ${name}`);
       if (r.priceBad) return H.toast(`Λάθος τιμή: ${name}`);
       if (r.disc < 0 || r.disc > 100) return H.toast(`Λάθος έκπτωση: ${name}`);
-      lines.push({ name, P: prodOf(l), ...r });
+      lines.push({ name, P: prodOf(l), meta: { code: l.dataset.code || '', ean: l.dataset.ean || '', sup: l.dataset.sup || '' }, ...r });
     }
     if (!lines.length) return H.toast('Γράψε τουλάχιστον ένα προϊόν');
 
@@ -178,10 +248,10 @@ export async function openInvoice(el, { product = null } = {}) {
     lines.forEach((x, i) => {
       let P = x.P;
       if (!P) {
-        const id = autoId(x.name);
-        P = { id, name: x.name, kind: 'both', code: '', size: '', cost: null, price: null, min: 1, updatedAt: now };
-        newProds.push(P);
-        cache.byName.set(normKey(x.name), id);
+        // Νέο προϊόν: αν ήρθε από email κρατά κωδικό/barcode (ώστε να αναγνωρίζεται την επόμενη φορά και από τον κατάλογο).
+        const id = x.meta.code ? `lp:${x.meta.code}` : autoId(x.name);
+        P = cache.byId.get(id) || { id, name: x.name, supplierName: x.meta.sup, code: x.meta.code, ean: x.meta.ean, size: '', group: '', kind: 'both', listCost: null, cost: null, price: null, min: 1, updatedAt: now };
+        if (!cache.byId.has(id)) { newProds.push(P); cache.byName.set(normKey(x.name), id); }
       }
       if (x.net != null && x.P?.lastCost != null && Math.abs(x.net - x.P.lastCost) >= 1) changes.push({ name: x.P.name, from: x.P.lastCost, to: x.net, pct: ((x.net - x.P.lastCost) / x.P.lastCost) * 100 });
       moves.push({ uid: db.newUid(), productId: P.id, date, at: base + i, type: 'receive', qty: x.qty, cost: x.net, listPrice: x.list, disc: x.disc || null,
