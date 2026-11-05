@@ -7,14 +7,10 @@
 // στο προϊόν, οπότε η διαγραφή ενός τιμολογίου επαναφέρει αυτόματα τα κόστη.
 
 import * as db from './db.js';
+import { cleanSupplierName } from './backup.js';
 import { helpers, loadStock, getCache, normKey, fDate, afterChange, autoId } from './stock.js';
 
 let S = null; // ενεργή παραλαβή: { el, lineHtml, updateLine, updateTotals }
-
-// «LP Majirel CB 6.23 60ml R25 V522» → «Majirel CB 6.23 60ml» (αφαιρούνται το πρόθεμα LP και οι κωδικοί παρτίδας).
-export function cleanSupplierName(n) {
-  return String(n || '').replace(/^\s*LP\s+/i, '').replace(/\bV[A-Z]?\d{2,3}\b/g, '').replace(/\bR\d{2}\b/g, '').replace(/\s+/g, ' ').trim();
-}
 
 // Διαβάζει επικολλημένο πίνακα από email: EAN, Κωδικός, Ποσότητα («6 UN»), Περιγραφή (σε οποιαδήποτε σειρά στηλών).
 // Γραμμές χωρίς ποσότητα (επικεφαλίδες, κενά) αγνοούνται.

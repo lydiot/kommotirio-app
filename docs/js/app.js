@@ -5,7 +5,7 @@ import { renderResults, overdueClients } from './results.js';
 import * as lock from './lock.js';
 import * as stock from './stock.js';
 
-const APP_VERSION = '3.4.1';
+const APP_VERSION = '3.5.0';
 const OTHER = 'Άλλο'; // ad-hoc εργασία με δική της περιγραφή και ποσό
 
 // ---------------------------------------------------------------- βοηθητικά
@@ -962,6 +962,11 @@ async function importFromFile(file) {
     await loadStatic();
     await refreshDay();
     if (res.kind === 'clients') toast(`Πελατολόγιο: προστέθηκαν ${res.clientsAdded} ονόματα`);
+    else if (res.kind === 'invoice') {
+      await stock.loadStock(); renderOrderAlert();
+      toast(res.added === 0 ? `Το τιμολόγιο ${res.no} είχε ήδη εισαχθεί — δεν άλλαξε τίποτα`
+        : `Τιμολόγιο ${res.no}: ${res.added} γραμμές, ${res.pieces} τεμ., ${res.text}${res.checked ? ' ✓ συμφωνεί με το σύνολο' : ''}${res.newProducts ? ` · ${res.newProducts} νέα προϊόντα` : ''}`);
+    }
     else if (res.kind === 'products') toast(`Κατάλογος: ${res.productsAdded} νέα, ${res.productsUpdated} ενημερώθηκαν${res.priceChanges ? `, άλλαξαν οι τιμές σε ${res.priceChanges}` : ''}`);
     else toast(`Εισαγωγή: ${res.added} νέα, ${res.updated} ενημερώσεις, ${res.deleted} διαγραφές, ${res.days} ημέρες ταμείου`);
     return true;

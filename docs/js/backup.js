@@ -6,6 +6,11 @@ import * as db from './db.js';
 import { cleanName } from './seed.js';
 
 export const BACKUP_APP = 'kommotirio';
+
+// «LP Majirel CB 6.23 60ml R25 V522» → «Majirel CB 6.23 60ml» (αφαιρούνται το πρόθεμα LP και οι κωδικοί παρτίδας).
+export function cleanSupplierName(n) {
+  return String(n || '').replace(/^\s*LP\s+/i, '').replace(/\bV[A-Z]?\d{2,3}\b/g, '').replace(/\bR\d{2}\b/g, '').replace(/\s+/g, ' ').trim();
+}
 const normKey = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/ς/g, 'σ').replace(/\s+/g, ' ').trim();
 export const BACKUP_FORMAT = 1;
 
@@ -91,6 +96,52 @@ export async function importText(text) {
   let obj;
   try { obj = JSON.parse(text.replace(/^﻿/, '')); } catch { throw new Error('Το αρχείο δεν είναι αρχείο backup της εφαρμογής.'); }
 
+  // Τιμολόγιο από αρχείο: { "invoice": { supplier, no, date:"ΕΕΕΕ-ΜΜ-ΗΗ", discount, page?, pageTotal?, lines:[{code, ean, desc, qty, list, disc?}] } }
+  // (list = τιμή μονάδας χωρίς ΦΠΑ σε ευρώ, disc = έκπτωση %). Ίδιος υπολογισμός με την οθόνη τιμολογίου: καθαρή τιμή τεμαχίου
+  // στρογγυλεύεται στο λεπτό. Ασφαλές για επανάληψη (σταθερά uid ανά τιμολόγιο/σελίδα/προϊόν). Αν δίνεται pageTotal και δεν
+  // συμφωνεί με το άθροισμα, ΔΕΝ γίνεται εισαγωγή.
+  if (obj && obj.app !== BACKUP_APP && obj.invoice && Array.isArray(obj.invoice.lines)) {
+    const inv = obj.invoice;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(inv.date || '')) throw new Error('Το αρχείο τιμολογίου δεν έχει σωστή ημερομηνία.');
+    const date = inv.date, no = cleanName(inv.no || ''), supplier = cleanName(inv.supplier || ''), page = inv.page || 1;
+    const local = await db.getAll('products');
+    const byCode = new Map(local.filter((p) => p.code).map((p) => [String(p.code).toUpperCase(), p]));
+    const byEan = new Map(local.filter((p) => p.ean).map((p) => [String(p.ean), p]));
+    const byNm = new Map(local.map((p) => [normKey(p.name), p]));
+    const toC = (v) => (v == null || v === '' ? null : Math.round(Number(String(v).replace(',', '.')) * 100));
+    const eur = (c) => (c / 100).toFixed(2).replace('.', ',') + ' €';
+    const [y, mo, d] = date.split('-').map(Number), base = new Date(y, mo - 1, d, 12).getTime(), now = Date.now();
+    const dev = await db.getMeta('deviceId');
+    const newProds = [], moves = [], seen = new Map();
+    let sum = 0, pieces = 0;
+    inv.lines.forEach((ln, i) => {
+      const q = parseInt(ln.qty, 10); if (!(q > 0)) return;
+      const code = String(ln.code || '').trim().toUpperCase(), ean = String(ln.ean || '').trim();
+      let P = (code && byCode.get(code)) || (ean && byEan.get(ean)) || byNm.get(normKey(cleanSupplierName(ln.desc)));
+      if (!P) {
+        P = { id: code ? `lp:${code}` : db.newUid(), name: cleanSupplierName(ln.desc) || code || ean, supplierName: ln.desc || '', code, ean, size: '', group: '', kind: 'both', listCost: null, cost: null, price: null, min: 1, updatedAt: now };
+        newProds.push(P); if (code) byCode.set(code, P); if (ean) byEan.set(ean, P); byNm.set(normKey(P.name), P);
+      }
+      const list = toC(ln.list), disc = Number(ln.disc ?? inv.discount ?? 0) || 0;
+      const net = list == null ? null : Math.round(list * (1 - disc / 100));
+      const n = (seen.get(P.id) || 0) + 1; seen.set(P.id, n);
+      moves.push({ uid: `inv:${normKey(no) || date}:p${page}:${P.id}:${n}`, productId: P.id, date, at: base + i, type: 'receive', qty: q, cost: net, listPrice: list,
+        disc: disc || null, inv: no || null, supplier: supplier || null, dev, updatedAt: now });
+      if (net != null) sum += q * net;
+      pieces += q;
+    });
+    if (!moves.length) throw new Error('Το αρχείο τιμολογίου δεν έχει γραμμές με ποσότητα.');
+    const check = toC(inv.pageTotal);
+    if (check != null && Math.abs(sum - check) > 5) throw new Error(`Το άθροισμα των γραμμών (${eur(sum)}) δεν συμφωνεί με το σύνολο του αρχείου (${eur(check)}). Δεν έγινε εισαγωγή.`);
+    const have = new Set((await db.getAll('moves')).map((m) => m.uid));
+    const fresh = moves.filter((m) => !have.has(m.uid));
+    const keep = new Set(fresh.map((m) => m.productId));
+    await db.transaction(['products', 'moves', 'deleted'], (tx) => {
+      newProds.filter((p) => keep.has(p.id)).forEach((p) => tx.objectStore('products').put(p));
+      fresh.forEach((m) => { tx.objectStore('moves').put(m); tx.objectStore('deleted').delete(m.uid); });
+    });
+    return { kind: 'invoice', no, lines: moves.length, added: fresh.length, pieces, sum, checked: check != null, newProducts: newProds.filter((p) => keep.has(p.id)).length, text: eur(sum) };
+  }
   // Κατάλογος προϊόντων προμηθευτή: { "products": [ { name, code, ean, size, group, kind, listCost, price? } ] }.
   // Αντιστοίχιση με υπάρχοντα προϊόντα: κωδικός → barcode → όνομα. Νέα προϊόντα παίρνουν σταθερό id από τον κωδικό
   // (έτσι δύο συσκευές που εισάγουν τον ίδιο κατάλογο δεν δημιουργούν διπλά). Σε ήδη υπάρχοντα ενημερώνεται μόνο η τιμή
