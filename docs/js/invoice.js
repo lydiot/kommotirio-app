@@ -55,6 +55,7 @@ export async function openInvoice(el, { product = null } = {}) {
   await loadStock();
   const cache = getCache();
   const supplier0 = (await db.getMeta('lastSupplier')) || 'L\'Oréal';
+  const lastDisc = (await db.getMeta('lastDisc')) || '';   // η έκπτωση του προηγούμενου τιμολογίου (π.χ. 39)
 
   const lineHtml = (P, x = {}) => `<div class="inv-line" ${P ? `data-pid="${P.id}"` : ''} ${x.meta ? `data-code="${esc(x.meta.code)}" data-ean="${esc(x.meta.ean)}" data-sup="${esc(x.meta.sup)}"` : ''}>
     <div class="inv-top" data-pk-row>
@@ -64,7 +65,7 @@ export async function openInvoice(el, { product = null } = {}) {
     <div class="inv-nums">
       <label><span>Τεμ.</span><input class="input" data-i="qty" inputmode="numeric" placeholder="1" value="${x.qty ?? ''}"></label>
       <label><span>Τιμή (χωρίς ΦΠΑ)</span><span class="money"><input class="input" data-i="price" inputmode="decimal" placeholder="0" value="${P ? toInput(P.lastList ?? P.listCost ?? null) : ''}"><span class="cur">€</span></span></label>
-      <label><span>Έκπτωση</span><span class="money"><input class="input" data-i="disc" inputmode="decimal" placeholder="0"><span class="cur">%</span></span></label>
+      <label><span>Έκπτωση</span><span class="money"><input class="input" data-i="disc" inputmode="decimal" placeholder="0" value="${esc(document.getElementById('inv-disc')?.value ?? lastDisc)}"><span class="cur">%</span></span></label>
     </div>
     <div class="inv-info"></div>
   </div>`;
@@ -141,8 +142,8 @@ export async function openInvoice(el, { product = null } = {}) {
       </div>
       <label class="field" style="margin-top:12px"><span class="lbl">Προμηθευτής</span><input class="input" id="inv-supplier" autocomplete="off" value="${esc(supplier0)}"></label>
       <div class="grid2">
-        <label class="field"><span class="lbl">Σύνολο τιμολογίου (χωρίς ΦΠΑ)</span><span class="money"><input class="input" id="inv-total" inputmode="decimal" placeholder="για έλεγχο"><span class="cur">€</span></span></label>
-        <label class="field"><span class="lbl">Έκπτωση σε όλες τις γραμμές</span><span class="money"><input class="input" id="inv-disc" inputmode="decimal" placeholder="0"><span class="cur">%</span></span></label>
+        <label class="field"><span class="lbl">Σύνολο σελίδας (καθαρή αξία, π.χ. «Σε μεταφορά»)</span><span class="money"><input class="input" id="inv-total" inputmode="decimal" placeholder="για έλεγχο"><span class="cur">€</span></span></label>
+        <label class="field"><span class="lbl">Έκπτωση σε όλες τις γραμμές</span><span class="money"><input class="input" id="inv-disc" inputmode="decimal" placeholder="0" value="${esc(lastDisc)}"><span class="cur">%</span></span></label>
       </div>
       <h2>Γραμμές</h2>
       <button class="btn" data-act="inv-paste" style="margin-bottom:10px">📋 Επικόλληση από email</button>
@@ -211,6 +212,7 @@ export async function openInvoice(el, { product = null } = {}) {
     box.firstElementChild?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
   if (product) { const l = document.querySelector('#inv-lines .inv-line'); l.querySelector('[data-i=qty]').focus(); }
+  document.querySelectorAll('#inv-lines [data-i=disc]').forEach((d) => { if (!d.value) d.value = lastDisc; });
   updateTotals();
 
   async function save() {
@@ -236,8 +238,10 @@ export async function openInvoice(el, { product = null } = {}) {
     const unknown = lines.filter((x) => !x.P);
     if (unknown.length && !confirm(`Δεν υπάρχουν στον κατάλογο:\n${unknown.map((x) => x.name).join('\n')}\n\nΝα δημιουργηθούν νέα προϊόντα;`)) return;
     if (inv) {
-      const dup = (await db.getAll('moves')).some((m) => m.type === 'receive' && m.inv && normKey(m.inv) === normKey(inv) && normKey(m.supplier || '') === normKey(supplier));
-      if (dup && !confirm(`Το τιμολόγιο «${inv}» του προμηθευτή «${supplier}» έχει ήδη καταχωρηθεί.\nΝα προστεθεί ξανά (διπλή αύξηση αποθέματος);`)) return;
+      const prev = (await db.getAll('moves')).filter((m) => m.type === 'receive' && m.inv && normKey(m.inv) === normKey(inv) && normKey(m.supplier || '') === normKey(supplier));
+      const seen = new Set(prev.map((m) => m.productId));
+      const again = lines.filter((x) => x.P && seen.has(x.P.id));
+      if (again.length && !confirm(`Στο τιμολόγιο «${inv}» έχουν ήδη καταχωρηθεί ${again.length === 1 ? 'το προϊόν' : `${again.length} από τα προϊόντα`}:\n${again.slice(0, 5).map((x) => x.P.name).join('\n')}${again.length > 5 ? '\n…' : ''}\n\nΑν είναι άλλη σελίδα του ίδιου τιμολογίου δεν θα έπρεπε να υπάρχουν. Να προστεθούν ξανά (διπλή αύξηση αποθέματος);`)) return;
     }
     const sum = lines.reduce((a, x) => a + x.total, 0);
     if (hdr != null && Math.abs(sum - hdr) > 5 && !confirm(`Οι γραμμές κάνουν ${fmt(sum)}, το τιμολόγιο γράφει ${fmt(hdr)} (διαφορά ${fmt(Math.abs(sum - hdr))}).\nΝα καταχωρηθεί ούτως ή άλλως;`)) return;
@@ -262,6 +266,8 @@ export async function openInvoice(el, { product = null } = {}) {
       moves.forEach((m) => tx.objectStore('moves').put(m));
     });
     if (supplier) await db.setMeta('lastSupplier', supplier);
+    const dsc = document.getElementById('inv-disc').value.trim();
+    if (dsc) await db.setMeta('lastDisc', dsc);
     S = null;
     H.closeSheet();
     await afterChange(el, null, null);
